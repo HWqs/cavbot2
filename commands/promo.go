@@ -521,14 +521,39 @@ func isActiveDutyScope(position string) bool {
 	return strings.EqualFold(strings.ReplaceAll(position, "-", ""), promoActiveDutyScope)
 }
 
-func collectPromoCandidates(ctx context.Context, position string, asOf time.Time) (promoScan, error) {
-	var roster *utils.LiteRosterResponse
-	var err error
+// isDevcomScope matches the DEVCOM department, which spans the DEVCOM HQ and
+// its D/DEVCOM sub-unit — a fuzzy search on one term misses the other, so
+// resolvePositionRoster merges both.
+func isDevcomScope(position string) bool {
+	return strings.EqualFold(strings.TrimSpace(position), "DEVCOM")
+}
+
+// resolvePositionRoster fetches the lite roster for a position scope,
+// special-casing activeduty (the whole combat roster) and DEVCOM (HQ +
+// D/DEVCOM sub-unit, merged and deduplicated by username). Shared by /promo
+// and /billetaudit.
+func resolvePositionRoster(ctx context.Context, position string) (*utils.LiteRosterResponse, error) {
 	if isActiveDutyScope(position) {
-		roster, err = utils.GetLiteRoster(ctx, "ROSTER_TYPE_COMBAT")
-	} else {
-		roster, err = utils.GetRosterByFuzzyPositionSearch(ctx, position)
+		return utils.GetLiteRoster(ctx, "ROSTER_TYPE_COMBAT")
 	}
+	if isDevcomScope(position) {
+		merged := map[string]utils.LiteProfileResponse{}
+		for _, term := range []string{"DEVCOM", "D/DEVCOM"} {
+			r, err := utils.GetRosterByFuzzyPositionSearch(ctx, term)
+			if err != nil {
+				return nil, err
+			}
+			for _, p := range r.LiteProfiles {
+				merged[p.User.Username] = p // dedup: same member from both searches
+			}
+		}
+		return &utils.LiteRosterResponse{LiteProfiles: merged}, nil
+	}
+	return utils.GetRosterByFuzzyPositionSearch(ctx, position)
+}
+
+func collectPromoCandidates(ctx context.Context, position string, asOf time.Time) (promoScan, error) {
+	roster, err := resolvePositionRoster(ctx, position)
 	if err != nil {
 		return promoScan{}, err
 	}
@@ -692,10 +717,12 @@ func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, 
 
 	if v.NoRequirements {
 		if _, known := promoRankSeniority[strings.ToUpper(profile.Rank.RankShort)]; known {
-			// A recognized rank with no ladder entry is topped out (1SG, CSM,
-			// SGM, COL and general officers) — advancement is by appointment,
-			// not a standard promotion. Say that rather than "no ladder".
-			fmt.Fprintf(&b, "Standard ladder: **%s is at the top of the standard ladder** — any further advancement is by appointment, not automatic/discretionary promotion.\n", profile.Rank.RankShort)
+			// Recognized ranks with no TIG/TIS ladder entry (1SG, CSM, SGM,
+			// COL, general officers). Several of these still advance — but by
+			// billet, not by a time-based ladder (e.g. 1SG→SGM/CSM into a Bn/
+			// Regt HQ senior-enlisted seat; COL→BG on taking Regt command).
+			// State that neutrally rather than claiming "topped out".
+			fmt.Fprintf(&b, "Standard ladder: no standard TIG/TIS ladder for %s — any advancement is billet-based and handled by S1 (see 7CAV-R-023).\n", profile.Rank.RankShort)
 		} else {
 			b.WriteString("Standard ladder: no standard promotion ladder for this rank.\n")
 		}

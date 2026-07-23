@@ -526,6 +526,51 @@ func promoRankInteraction(rank string) *discordgo.InteractionCreate {
 	}}
 }
 
+// DEVCOM scope merges the HQ search and the D/DEVCOM sub-unit search,
+// deduplicating a member returned by both.
+func TestResolvePositionRosterDevcomMerge(t *testing.T) {
+	hq := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": promoLiteProfile("Hq.H", "SGT", "101"),
+		"2": promoLiteProfile("Both.B", "SSG", "102"), // also in the sub-unit search
+	}}
+	sub := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": promoLiteProfile("Sub.S", "CPL", "201"),
+		"2": promoLiteProfile("Both.B", "SSG", "102"),
+	}}
+	hqBody, _ := json.Marshal(hq)
+	subBody, _ := json.Marshal(sub)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/D/DEVCOM"):
+			_, _ = w.Write(subBody)
+		case strings.HasSuffix(r.URL.Path, "/DEVCOM"):
+			_, _ = w.Write(hqBody)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(utils.SetAPIBaseURLForTest(srv.URL))
+
+	roster, err := resolvePositionRoster(t.Context(), "devcom")
+	if err != nil {
+		t.Fatalf("resolvePositionRoster: %v", err)
+	}
+	names := map[string]bool{}
+	for _, p := range roster.LiteProfiles {
+		names[p.User.Username] = true
+	}
+	for _, want := range []string{"Hq.H", "Sub.S", "Both.B"} {
+		if !names[want] {
+			t.Errorf("DEVCOM merge missing %s; got %v", want, names)
+		}
+	}
+	if len(roster.LiteProfiles) != 3 {
+		t.Errorf("expected 3 deduplicated members, got %d (%v)", len(roster.LiteProfiles), names)
+	}
+}
+
 func TestRunPromoRankMode(t *testing.T) {
 	// The active-duty roster carries a PVT (eligible), a PVT (not eligible),
 	// and an eligible PFC that the rank filter must exclude.
@@ -725,9 +770,10 @@ func TestRunPromoUserModeVerdict(t *testing.T) {
 	}
 }
 
-// A recognized rank with no ladder entry (1SG) reads as topped out, not
-// "no ladder defined", and carries the shared S6 disclaimer.
-func TestRunPromoUserModeToppedOutRank(t *testing.T) {
+// A recognized rank with no TIG/TIS ladder entry (1SG) reads as billet-based
+// advancement — NOT "topped out" (1SG can still make SGM/CSM) and not the
+// bug-like "no ladder defined" — and carries the shared S6 disclaimer.
+func TestRunPromoUserModeNoLadderRank(t *testing.T) {
 	profiles := map[string]utils.ProfileResponse{
 		"Top.T": promoFullProfile("Top.T", "1SG", "2024-01-01", "2022-01-01", "First Sergeant A/ACD"),
 	}
@@ -737,11 +783,11 @@ func TestRunPromoUserModeToppedOutRank(t *testing.T) {
 	runPromo(f, promoUserInteraction("Top.T", ""), afsmRefDate)
 
 	content := lastEditContent(f.Calls())
-	if !strings.Contains(content, "top of the standard ladder") {
-		t.Errorf("topped-out rank message missing: %q", content)
+	if !strings.Contains(content, "billet-based") {
+		t.Errorf("billet-based advancement message missing: %q", content)
 	}
-	if strings.Contains(content, "no promotion ladder defined") {
-		t.Errorf("old 'no ladder defined' wording should be gone: %q", content)
+	if strings.Contains(content, "top of the standard ladder") {
+		t.Errorf("must not claim 1SG is topped out: %q", content)
 	}
 	if !strings.Contains(content, "report inaccurate outputs to S6") {
 		t.Errorf("shared disclaimer missing from verdict: %q", content)
