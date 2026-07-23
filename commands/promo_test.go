@@ -303,8 +303,8 @@ func TestPromoDefinition(t *testing.T) {
 	if cmd.Definition.Name != "promo" {
 		t.Errorf("command name = %q, want promo", cmd.Definition.Name)
 	}
-	if len(cmd.Definition.Options) != 5 {
-		t.Fatalf("options = %d, want 5 (position, user, rank, as_of, export_csv)", len(cmd.Definition.Options))
+	if len(cmd.Definition.Options) != 6 {
+		t.Fatalf("options = %d, want 6 (position, user, rank, type, as_of, export_csv)", len(cmd.Definition.Options))
 	}
 	for _, opt := range cmd.Definition.Options {
 		if opt.Required {
@@ -565,6 +565,123 @@ func TestRunPromoRankModeNoHolders(t *testing.T) {
 	}
 }
 
+// --- type filter -------------------------------------------------------------
+
+// wingedCPL is a lateral-only candidate: CPL, too fresh for the standard
+// ladder, no prior higher rank for §VII, but flight-qualified (Aviator Badge
+// + 15-series MOS) → lateral WO1.
+func wingedCPL(username string) utils.ProfileResponse {
+	p := promoFullProfile(username, "CPL", "2026-05-01", "2026-05-01", "Pilot 1/C/1-7")
+	p.Mos = "15A"
+	p.Awards = []utils.Award{{AwardName: "Army Aviator Badge"}}
+	return p
+}
+
+// promoTypeInteraction builds /promo position:ACD type:<promoType>.
+func promoTypeInteraction(promoType string) *discordgo.InteractionCreate {
+	i := promoInteraction("ACD", "")
+	data := i.Data.(discordgo.ApplicationCommandInteractionData)
+	data.Options = append(data.Options, &discordgo.ApplicationCommandInteractionDataOption{
+		Name: "type", Type: discordgo.ApplicationCommandOptionString, Value: promoType,
+	})
+	i.Data = data
+	return i
+}
+
+// servePromoTypeFixture serves a roster carrying one candidate per path:
+// automatic (PVT), discretionary (SGT), §VII-only (vet CPL), lateral-only
+// (winged CPL).
+func servePromoTypeFixture(t *testing.T) {
+	t.Helper()
+	vet := viiVetProfile() // §VII-only: CPL, previously held SSG
+	vet.UniformUrl = "https://7cav.us/data/roster_uniforms/0/301.jpg"
+	wings := wingedCPL("Wings.W")
+
+	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": promoLiteProfile("Ready.R", "PVT", "101"),
+		"2": promoLiteProfile("Sarge.S", "SGT", "102"),
+		"3": {User: vet.User, Rank: vet.Rank, UniformUrl: vet.UniformUrl},
+		"4": promoLiteProfile("Wings.W", "CPL", "302"),
+	}}
+	profiles := map[string]utils.ProfileResponse{
+		"Ready.R": promoFullProfile("Ready.R", "PVT", "2026-04-01", "2026-04-01", "Rifleman"),
+		"Sarge.S": promoFullProfile("Sarge.S", "SGT", "2025-01-01", "2024-01-01", "Platoon Sergeant 1/1/A"),
+		"Vet.V":   *vet,
+		"Wings.W": wings,
+	}
+	servePromoAPIWithRanks(t, roster, profiles, viiTestRanks())
+}
+
+func TestRunPromoTypeFilters(t *testing.T) {
+	// For each path: the one candidate that must render and, implicitly, the
+	// three that must not.
+	cases := []struct {
+		promoType string
+		want      string
+	}{
+		{"automatic", "Ready.R"},
+		{"discretionary", "Sarge.S"},
+		{"vii", "Vet.V"},
+		{"lateral", "Wings.W"},
+	}
+	all := []string{"Ready.R", "Sarge.S", "Vet.V", "Wings.W"}
+	for _, tc := range cases {
+		t.Run(tc.promoType, func(t *testing.T) {
+			servePromoTypeFixture(t)
+			f := &fakeResponder{}
+			runPromo(f, promoTypeInteraction(tc.promoType), afsmRefDate)
+
+			content := lastEditContent(f.Calls())
+			if !strings.Contains(content, tc.want) {
+				t.Errorf("%s candidate missing: %q", tc.promoType, content)
+			}
+			for _, other := range all {
+				if other != tc.want && strings.Contains(content, other) {
+					t.Errorf("%s must be filtered out of type:%s: %q", other, tc.promoType, content)
+				}
+			}
+			if !strings.Contains(content, "("+tc.promoType+")") {
+				t.Errorf("header should carry the type tag: %q", content)
+			}
+		})
+	}
+}
+
+// Unfiltered lists must include the lateral-only candidate with the lateral
+// rendering.
+func TestRunPromoLateralInUnfilteredList(t *testing.T) {
+	servePromoTypeFixture(t)
+	f := &fakeResponder{}
+	runPromo(f, promoInteraction("ACD", ""), afsmRefDate)
+
+	content := lastEditContent(f.Calls())
+	if !strings.Contains(content, "Wings.W") {
+		t.Fatalf("lateral candidate missing from unfiltered list: %q", content)
+	}
+	if !strings.Contains(content, "CPL → WO1 (lateral, flight wings)") {
+		t.Errorf("lateral line rendering wrong: %q", content)
+	}
+}
+
+// Wings without an aviation MOS (or the reverse) is NOT lateral-eligible.
+func TestLateralRequiresWingsAndAviationMos(t *testing.T) {
+	badgeOnly := promoFullProfile("Badge.B", "CPL", "2026-05-01", "2026-05-01", "Rifleman")
+	badgeOnly.Awards = []utils.Award{{AwardName: "Army Aviator Badge"}}
+
+	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": promoLiteProfile("Badge.B", "CPL", "101"),
+	}}
+	servePromoAPIWithRanks(t, roster, map[string]utils.ProfileResponse{"Badge.B": badgeOnly}, viiTestRanks())
+
+	f := &fakeResponder{}
+	runPromo(f, promoTypeInteraction("lateral"), afsmRefDate)
+
+	content := lastEditContent(f.Calls())
+	if strings.Contains(content, "Badge.B") {
+		t.Errorf("badge without aviation MOS must not be lateral-eligible: %q", content)
+	}
+}
+
 // --- single-user mode --------------------------------------------------------
 
 func TestRunPromoUserModeVerdict(t *testing.T) {
@@ -628,18 +745,35 @@ func TestRunPromoUserModeUnknownUser(t *testing.T) {
 	}
 }
 
-func TestRunPromoModeValidation(t *testing.T) {
-	// No mode option at all → validation error, no API calls.
+// No mode option at all → the whole Active Duty roster, not an error.
+func TestRunPromoDefaultsToActiveDuty(t *testing.T) {
+	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": promoLiteProfile("Ready.R", "PVT", "101"),
+	}}
+	profiles := map[string]utils.ProfileResponse{
+		"Ready.R": promoFullProfile("Ready.R", "PVT", "2026-04-01", "2026-04-01", "Rifleman"),
+	}
+	servePromoAPIWithRanks(t, roster, profiles, viiTestRanks())
+
 	f := &fakeResponder{}
 	runPromo(f, &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
 		Type:   discordgo.InteractionApplicationCommand,
 		Data:   discordgo.ApplicationCommandInteractionData{Name: "promo"},
 		Member: &discordgo.Member{User: &discordgo.User{ID: "42", Username: "tester"}},
 	}}, afsmRefDate)
-	assertPromoModeError(t, f)
 
-	// Both position and user → same validation error.
-	f = &fakeResponder{}
+	content := lastEditContent(f.Calls())
+	if !strings.Contains(content, "activeduty members eligible") {
+		t.Errorf("bare /promo should default to the activeduty scope: %q", content)
+	}
+	if !strings.Contains(content, "Ready.R") {
+		t.Errorf("default scan missing candidate: %q", content)
+	}
+}
+
+func TestRunPromoModeValidation(t *testing.T) {
+	// Both position and user → validation error.
+	f := &fakeResponder{}
 	i := promoInteraction("ACD", "")
 	data := i.Data.(discordgo.ApplicationCommandInteractionData)
 	data.Options = append(data.Options, &discordgo.ApplicationCommandInteractionDataOption{
@@ -665,7 +799,7 @@ func assertPromoModeError(t *testing.T, f *fakeResponder) {
 	t.Helper()
 	for _, call := range f.Calls() {
 		if call.Method == "Respond" && call.Response != nil && call.Response.Data != nil &&
-			strings.Contains(call.Response.Data.Content, "exactly one of") {
+			strings.Contains(call.Response.Data.Content, "at most one of") {
 			return
 		}
 	}

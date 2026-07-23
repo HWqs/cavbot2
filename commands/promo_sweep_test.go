@@ -311,14 +311,18 @@ func TestCollectPromoCandidatesActiveDutyScope(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Cleanup(utils.SetAPIBaseURLForTest(srv.URL))
 
-	scan, err := collectPromoCandidates(t.Context(), "Active-Duty", afsmRefDate)
-	if err != nil {
-		t.Fatalf("collectPromoCandidates: %v", err)
+	// Canonical spelling and the legacy hyphenated one must both route to the
+	// combat roster.
+	for _, scopeSpelling := range []string{"activeduty", "Active-Duty"} {
+		scan, err := collectPromoCandidates(t.Context(), scopeSpelling, afsmRefDate)
+		if err != nil {
+			t.Fatalf("collectPromoCandidates(%q): %v", scopeSpelling, err)
+		}
+		if len(scan.Candidates) != 1 || scan.Candidates[0].Username != "Ready.R" {
+			t.Errorf("candidates for %q = %+v", scopeSpelling, scan.Candidates)
+		}
 	}
-	if combatHits != 1 || fuzzyHits != 0 {
-		t.Errorf("combat=%d fuzzy=%d, want 1/0", combatHits, fuzzyHits)
-	}
-	if len(scan.Candidates) != 1 || scan.Candidates[0].Username != "Ready.R" {
-		t.Errorf("candidates = %+v", scan.Candidates)
+	if combatHits != 2 || fuzzyHits != 0 {
+		t.Errorf("combat=%d fuzzy=%d, want 2/0", combatHits, fuzzyHits)
 	}
 }

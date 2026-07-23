@@ -21,6 +21,16 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// Promotion-path values for the `type` filter option. automatic and
+// discretionary are the standard-ladder Type values from
+// promotionRequirements; vii and lateral are the alternative paths.
+const (
+	promoTypeAutomatic     = "automatic"
+	promoTypeDiscretionary = "discretionary"
+	promoTypeVii           = "vii"
+	promoTypeLateral       = "lateral"
+)
+
 // promoCandidate is one line of /promo output.
 type promoCandidate struct {
 	Username  string
@@ -31,6 +41,9 @@ type promoCandidate struct {
 	// candidate eligible through §VII (standard gates may be unmet).
 	Vii    *viiResult
 	ViaVII bool
+	// LateralTarget is the warrant rank a winged aviator NCO can move to
+	// laterally (e.g. CPL → WO1); empty when the lateral path doesn't apply.
+	LateralTarget string
 }
 
 // promoMessageLimit is the per-message packing bound, under Discord's
@@ -73,7 +86,7 @@ func Promo() Command {
 				{
 					Type:        discordgo.ApplicationCommandOptionString,
 					Name:        "position",
-					Description: "Position/unit (fuzzy, e.g. 'ACD', '1-7', 'S1') or 'active-duty' for the whole roster",
+					Description: "Position/unit (fuzzy, e.g. 'ACD', '1-7', 'S1') or 'activeduty' for the whole roster (default)",
 					Required:    false,
 				},
 				{
@@ -100,6 +113,18 @@ func Promo() Command {
 					Description: "Attach the full candidate list as a CSV file (position mode)",
 					Required:    false,
 				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "type",
+					Description: "Only list one promotion path",
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "automatic", Value: promoTypeAutomatic},
+						{Name: "discretionary", Value: promoTypeDiscretionary},
+						{Name: "vii (veteran rank retention)", Value: promoTypeVii},
+						{Name: "lateral (wings → warrant)", Value: promoTypeLateral},
+					},
+				},
 			},
 		},
 		Handler: handlePromoCommand,
@@ -115,7 +140,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 	username, discordID := interactionUsernameAndID(i)
 	utils.Info("🚀 Starting Promo Check", "command", "Promo", "username", username, "discord_id", discordID)
 
-	position, user, rank := "", "", ""
+	position, user, rank, promoType := "", "", "", ""
 	exportCSV := false
 	asOf := nowUTC
 	for _, opt := range i.ApplicationCommandData().Options {
@@ -126,6 +151,8 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 			user = opt.StringValue()
 		case "rank":
 			rank = opt.StringValue()
+		case "type":
+			promoType = opt.StringValue()
 		case "export_csv":
 			exportCSV = opt.BoolValue()
 		case "as_of":
@@ -137,19 +164,23 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 			asOf = parsed
 		}
 	}
-	utils.Debug("🔍 Processing promo options", "position", position, "user", user, "rank", rank, "as_of", asOf.Format("2006-01-02"))
+	utils.Debug("🔍 Processing promo options", "position", position, "user", user, "rank", rank, "type", promoType, "as_of", asOf.Format("2006-01-02"))
 
-	// Exactly one of position / user / rank selects the mode; Discord can't
-	// express mutually-exclusive options, so validate here.
+	// At most one of position / user / rank selects the mode; Discord can't
+	// express mutually-exclusive options, so validate here. No mode option at
+	// all defaults to the whole Active Duty roster.
 	modes := 0
 	for _, v := range []string{position, user, rank} {
 		if v != "" {
 			modes++
 		}
 	}
-	if modes != 1 {
-		utils.HandleError(r, i, "❌ Provide exactly one of `position` (scope check), `user` (single-trooper verdict), or `rank` (rank-wide check).")
+	if modes > 1 {
+		utils.HandleError(r, i, "❌ Provide at most one of `position` (scope check), `user` (single-trooper verdict), or `rank` (rank-wide check).")
 		return
+	}
+	if modes == 0 {
+		position = promoActiveDutyScope
 	}
 	if user != "" {
 		runPromoUser(r, i, user, asOf)
@@ -157,10 +188,13 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 	}
 
 	// Scope label for headers, filenames, and logs: the position as typed, or
-	// the rank in canonical upper-case form.
+	// the rank in canonical upper-case form, tagged when a type filter is on.
 	scope := position
 	if rank != "" {
 		scope = strings.ToUpper(rank)
+	}
+	if promoType != "" {
+		scope += " (" + promoType + ")"
 	}
 
 	err := r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -201,6 +235,9 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 		}
 		return
 	}
+	if promoType != "" {
+		res.Candidates = filterPromoCandidates(res.Candidates, promoType)
+	}
 
 	if exportCSV {
 		sendPromoCSV(r, i, scope, asOf, res)
@@ -222,6 +259,31 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 		}
 	}
 	utils.Info("✨ Done!", "command", "Promo", "position", scope, "eligible", len(res.Candidates))
+}
+
+// filterPromoCandidates keeps only candidates eligible via the given
+// promotion path. automatic/discretionary require STANDARD eligibility of
+// that ladder type (a §VII-only or lateral-only candidate whose current
+// rank's ladder happens to be that type does not count); vii keeps §VII
+// eligibles and lateral keeps winged-aviator warrant moves, in both cases
+// regardless of standard-ladder status.
+func filterPromoCandidates(candidates []promoCandidate, promoType string) []promoCandidate {
+	filtered := make([]promoCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		keep := false
+		switch promoType {
+		case promoTypeAutomatic, promoTypeDiscretionary:
+			keep = c.Verdict.Eligible && c.Verdict.Type == promoType
+		case promoTypeVii:
+			keep = c.ViaVII
+		case promoTypeLateral:
+			keep = c.LateralTarget != ""
+		}
+		if keep {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
 }
 
 // evaluatePromoMember returns (candidate, nil) when the trooper is eligible
@@ -268,7 +330,16 @@ func evaluatePromoMember(
 	}
 	viaVII := vii != nil && vii.EligibleNow
 
-	if !verdict.Eligible && !viaVII {
+	// Lateral path: an NCO whose rank has a warrant equivalent moves across
+	// when flight-qualified (wings + 15-series MOS, the same pairing the §VII
+	// engine uses for warrant display), e.g. CPL → WO1.
+	lateralTarget := ""
+	if target, ok := viiE2W[strings.ToUpper(rankShort)]; ok &&
+		viiHasWings(fullProfile) && viiIsAviation(fullProfile) {
+		lateralTarget = target
+	}
+
+	if !verdict.Eligible && !viaVII && lateralTarget == "" {
 		utils.Debug("⏳ Member not eligible", "username", member.User.Username, "days_until", verdict.DaysUntilEligible)
 		return nil, nil
 	}
@@ -278,14 +349,15 @@ func evaluatePromoMember(
 		return nil, fmt.Errorf("uniform URL parse failed: %w", err)
 	}
 
-	utils.Info("✨ Member eligible for promotion", "username", member.User.Username, "next_rank", verdict.NextRank, "via_vii", viaVII)
+	utils.Info("✨ Member eligible for promotion", "username", member.User.Username, "next_rank", verdict.NextRank, "via_vii", viaVII, "lateral", lateralTarget)
 	return &promoCandidate{
-		Username:  member.User.Username,
-		MilpacURL: fmt.Sprintf("https://7cav.us/rosters/profile/%s", milpacID),
-		RankShort: rankShort,
-		Verdict:   verdict,
-		Vii:       vii,
-		ViaVII:    viaVII,
+		Username:      member.User.Username,
+		MilpacURL:     fmt.Sprintf("https://7cav.us/rosters/profile/%s", milpacID),
+		RankShort:     rankShort,
+		Verdict:       verdict,
+		Vii:           vii,
+		ViaVII:        viaVII,
+		LateralTarget: lateralTarget,
 	}, nil
 }
 
@@ -340,17 +412,27 @@ func formatPromoMessages(position string, asOf time.Time, candidates []promoCand
 	return append(messages, strings.TrimRight(b.String(), "\n"))
 }
 
-// formatPromoLine renders one candidate. §VII-only candidates show the
-// restoration target and the previously-held evidence; standard candidates
-// show the ladder step. A candidate eligible via both paths reads as
-// standard, with the §VII flag appended.
+// formatPromoLine renders one candidate. Standard candidates show the ladder
+// step; §VII-only candidates the restoration target and previously-held
+// evidence; lateral-only candidates the warrant move. A candidate eligible
+// via several paths reads as the most conventional one (standard, then
+// §VII), with the other paths appended as flags.
 func formatPromoLine(c promoCandidate) string {
+	lateralNote := func() string {
+		if c.LateralTarget == "" {
+			return ""
+		}
+		return ", also lateral → " + c.LateralTarget
+	}
+	if !c.Verdict.Eligible && !c.ViaVII {
+		return fmt.Sprintf("[%s](<%s>) %s → %s (lateral, flight wings)\n", c.Username, c.MilpacURL, c.RankShort, c.LateralTarget)
+	}
 	if c.ViaVII && !c.Verdict.Eligible {
 		line := fmt.Sprintf("[%s](<%s>) %s → %s (§VII veteran retention", c.Username, c.MilpacURL, c.RankShort, c.Vii.Target.Short)
 		if c.Vii.TargetHeldDate != "" {
 			line += ", held " + c.Vii.TargetHeldDate
 		}
-		return line + ")\n"
+		return line + lateralNote() + ")\n"
 	}
 	line := fmt.Sprintf("[%s](<%s>) %s → %s (%s", c.Username, c.MilpacURL, c.RankShort, c.Verdict.NextRank, c.Verdict.Type)
 	if len(c.Verdict.PendingDisplayCourses) > 0 {
@@ -359,7 +441,7 @@ func formatPromoLine(c promoCandidate) string {
 	if c.ViaVII {
 		line += ", also §VII → " + c.Vii.Target.Short
 	}
-	return line + ")\n"
+	return line + lateralNote() + ")\n"
 }
 
 // promoScan is the result of one position-scope eligibility pass.
@@ -378,12 +460,18 @@ type promoScan struct {
 // and reported to Sentry.
 // promoActiveDutyScope is the special position value that sweeps the entire
 // Active Duty roster (ROSTER_TYPE_COMBAT) instead of a fuzzy position search.
-const promoActiveDutyScope = "active-duty"
+// It is also the default scope when /promo is called with no mode option.
+// The legacy "active-duty" spelling is still accepted (isActiveDutyScope).
+const promoActiveDutyScope = "activeduty"
+
+func isActiveDutyScope(position string) bool {
+	return strings.EqualFold(strings.ReplaceAll(position, "-", ""), promoActiveDutyScope)
+}
 
 func collectPromoCandidates(ctx context.Context, position string, asOf time.Time) (promoScan, error) {
 	var roster *utils.LiteRosterResponse
 	var err error
-	if strings.EqualFold(position, promoActiveDutyScope) {
+	if isActiveDutyScope(position) {
 		roster, err = utils.GetLiteRoster(ctx, "ROSTER_TYPE_COMBAT")
 	} else {
 		roster, err = utils.GetRosterByFuzzyPositionSearch(ctx, position)
@@ -582,6 +670,11 @@ func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, 
 		}
 	}
 
+	if target, ok := viiE2W[strings.ToUpper(profile.Rank.RankShort)]; ok &&
+		viiHasWings(profile) && viiIsAviation(profile) {
+		fmt.Fprintf(&b, "\nLateral: **eligible for %s** (flight wings + aviation MOS).", target)
+	}
+
 	switch {
 	case !viiActive:
 		b.WriteString("\nℹ️ Veteran Rank Retention (§VII) check unavailable this run (rank data fetch failed).")
@@ -637,27 +730,29 @@ func sendPromoCSV(r utils.InteractionResponder, i *discordgo.InteractionCreate, 
 	_ = w.Write([]string{
 		"username", "current_rank", "next_rank", "path", "type",
 		"tig_days", "tig_required", "tis_days", "tis_required",
-		"pending_courses", "vii_target", "vii_held_date", "vii_held_role", "milpac_url",
+		"pending_courses", "vii_target", "vii_held_date", "vii_held_role", "lateral_target", "milpac_url",
 	})
 	for _, c := range scan.Candidates {
-		path := "standard"
+		var paths []string
+		if c.Verdict.Eligible {
+			paths = append(paths, "standard")
+		}
 		viiTarget, viiHeldDate, viiHeldRole := "", "", ""
 		if c.ViaVII {
-			if c.Verdict.Eligible {
-				path = "standard+vii"
-			} else {
-				path = "vii"
-			}
+			paths = append(paths, "vii")
 			viiTarget = c.Vii.Target.Short
 			viiHeldDate = c.Vii.TargetHeldDate
 			viiHeldRole = c.Vii.TargetHeldRole
 		}
+		if c.LateralTarget != "" {
+			paths = append(paths, "lateral")
+		}
 		_ = w.Write([]string{
-			c.Username, c.RankShort, c.Verdict.NextRank, path, c.Verdict.Type,
+			c.Username, c.RankShort, c.Verdict.NextRank, strings.Join(paths, "+"), c.Verdict.Type,
 			fmt.Sprintf("%d", c.Verdict.TigDays), fmt.Sprintf("%d", c.Verdict.TigRequired),
 			fmt.Sprintf("%d", c.Verdict.TisDays), fmt.Sprintf("%d", c.Verdict.TisRequired),
 			strings.Join(c.Verdict.PendingDisplayCourses, ";"),
-			viiTarget, viiHeldDate, viiHeldRole, c.MilpacURL,
+			viiTarget, viiHeldDate, viiHeldRole, c.LateralTarget, c.MilpacURL,
 		})
 	}
 	w.Flush()

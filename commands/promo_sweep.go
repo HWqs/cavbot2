@@ -13,7 +13,8 @@ package commands
 // Configuration (env, all optional — defaults are live):
 //   PROMO_SWEEP_CHANNEL_ID — target channel (default: the S1 test channel)
 //   PROMO_SWEEP_POSITIONS  — comma-separated position scopes (default "ACD");
-//                            the special value "active-duty" sweeps the whole
+//                            the special value "activeduty" (legacy spelling
+//                            "active-duty" also accepted) sweeps the whole
 //                            Active Duty roster (ROSTER_TYPE_COMBAT)
 //   PROMO_SWEEP_DISABLED   — set to "true" to not start the loop
 //
