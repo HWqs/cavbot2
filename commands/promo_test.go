@@ -1,6 +1,9 @@
 package commands
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -204,7 +207,7 @@ func TestFormatPromoResponseTruncation(t *testing.T) {
 			Verdict:   promoEligibility{Eligible: true, NextRank: "PFC", Type: "automatic"},
 		}
 	}
-	out := formatPromoResponse("ACD", mustParseDate("2026-05-15"), candidates, 0)
+	out := formatPromoResponse("ACD", mustParseDate("2026-05-15"), candidates, 0, true)
 	if !strings.Contains(out, "and 5 more") {
 		t.Errorf("expected truncation notice, got %q", out)
 	}
@@ -214,7 +217,7 @@ func TestFormatPromoResponseTruncation(t *testing.T) {
 }
 
 func TestFormatPromoResponseNoCandidates(t *testing.T) {
-	out := formatPromoResponse("ACD", mustParseDate("2026-05-15"), nil, 0)
+	out := formatPromoResponse("ACD", mustParseDate("2026-05-15"), nil, 0, true)
 	if !strings.Contains(out, "No ACD members eligible") {
 		t.Errorf("expected no-candidates message, got %q", out)
 	}
@@ -258,5 +261,112 @@ func TestRunPromoUsesInjectedNow(t *testing.T) {
 	content := lastEditContent(f.Calls())
 	if !strings.Contains(content, "2030-01-01") {
 		t.Errorf("header should show injected date, got %q", content)
+	}
+}
+
+// servePromoAPIWithRanks extends the AFSM test-server pattern with the
+// /milpacs/ranks endpoint the §VII path needs.
+func servePromoAPIWithRanks(
+	t *testing.T,
+	roster utils.LiteRosterResponse,
+	profilesByUsername map[string]utils.ProfileResponse,
+	ranks *utils.RanksResponse,
+) {
+	t.Helper()
+	rosterBody, err := json.Marshal(roster)
+	if err != nil {
+		t.Fatalf("marshal roster: %v", err)
+	}
+	ranksBody, err := json.Marshal(ranks)
+	if err != nil {
+		t.Fatalf("marshal ranks: %v", err)
+	}
+	encodedProfiles := make(map[string][]byte, len(profilesByUsername))
+	for name, p := range profilesByUsername {
+		b, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("marshal profile %q: %v", name, err)
+		}
+		encodedProfiles[name] = b
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/milpacs/ranks"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(ranksBody)
+		case strings.HasPrefix(r.URL.Path, "/milpacs/position/search/"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(rosterBody)
+		case strings.HasPrefix(r.URL.Path, "/milpacs/profile/username/"):
+			name := strings.TrimPrefix(r.URL.Path, "/milpacs/profile/username/")
+			body, ok := encodedProfiles[name]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(body)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(utils.SetAPIBaseURLForTest(srv.URL))
+}
+
+func TestRunPromoViiPath(t *testing.T) {
+	vet := viiVetProfile() // CPL, previously held SSG as Section Leader
+	vet.UniformUrl = "https://7cav.us/data/roster_uniforms/0/301.jpg"
+
+	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": {
+			User:       vet.User,
+			Rank:       vet.Rank,
+			UniformUrl: vet.UniformUrl,
+		},
+	}}
+	servePromoAPIWithRanks(t, roster, map[string]utils.ProfileResponse{"Vet.V": *vet}, viiTestRanks())
+
+	f := &fakeResponder{}
+	runPromo(f, promoInteraction("ACD", ""), afsmRefDate)
+
+	content := lastEditContent(f.Calls())
+	if !strings.Contains(content, "Vet.V") {
+		t.Fatalf("§VII veteran missing from output: %q", content)
+	}
+	if !strings.Contains(content, "§VII veteran retention") {
+		t.Errorf("§VII path not labeled: %q", content)
+	}
+	if !strings.Contains(content, "CPL → SSG") {
+		t.Errorf("restoration target missing: %q", content)
+	}
+	if !strings.Contains(content, "held 2021-01-01") {
+		t.Errorf("held-date evidence missing: %q", content)
+	}
+	if strings.Contains(content, "§VII veteran-retention check unavailable") {
+		t.Errorf("degradation notice should not render when ranks fetch succeeds: %q", content)
+	}
+}
+
+func TestRunPromoViiDegradationNotice(t *testing.T) {
+	// The plain server (no /milpacs/ranks route) 404s the ranks fetch —
+	// output must carry the standard-only notice.
+	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": promoLiteProfile("Ready.R", "PVT", "101"),
+	}}
+	profiles := map[string]utils.ProfileResponse{
+		"Ready.R": promoFullProfile("Ready.R", "PVT", "2026-04-01", "2026-04-01", "Rifleman"),
+	}
+	serveRosterAndProfiles(t, roster, 200, profiles)
+
+	f := &fakeResponder{}
+	runPromo(f, promoInteraction("ACD", ""), afsmRefDate)
+
+	content := lastEditContent(f.Calls())
+	if !strings.Contains(content, "standard ladder only") {
+		t.Errorf("degradation notice missing: %q", content)
+	}
+	if !strings.Contains(content, "Ready.R") {
+		t.Errorf("standard path should still work: %q", content)
 	}
 }

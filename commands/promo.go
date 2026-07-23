@@ -2,9 +2,11 @@ package commands
 
 // /promo — S1 promotion checker (issue 7Cav/cavbot2#4).
 //
-// Lists every trooper in a position scope whose standard-ladder promotion
-// would be possible as of a given date (default today). Eligibility logic
-// lives in promo_eligibility.go, ported from the author's internal S1 promotion tooling.
+// Lists every trooper in a position scope whose promotion would be possible
+// as of a given date (default today), via either the standard ladder
+// (promo_eligibility.go) or the Veteran Rank Retention Ch.4 §VII alternative
+// path (vii.go). Both engines are ports of the author's internal S1
+// promotion tooling.
 
 import (
 	"context"
@@ -24,6 +26,10 @@ type promoCandidate struct {
 	MilpacURL string
 	RankShort string
 	Verdict   promoEligibility
+	// Vii is non-nil when the §VII path was evaluated; ViaVII marks a
+	// candidate eligible through §VII (standard gates may be unmet).
+	Vii    *viiResult
+	ViaVII bool
 }
 
 // promoMaxLines bounds output well under Discord's 2000-char message limit;
@@ -112,6 +118,17 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 		return
 	}
 
+	// Rank model for the §VII path, fetched once per run (after the
+	// empty-roster early return, so an empty scope costs no extra call). A
+	// failure degrades to standard-ladder-only rather than failing the
+	// command.
+	var rankModel *viiRankModel
+	if ranksResp, ranksErr := utils.GetRanks(ctx); ranksErr != nil {
+		utils.CaptureError("Ranks fetch failed; §VII path disabled for this run", ranksErr)
+	} else {
+		rankModel = buildRankModel(ranksResp)
+	}
+
 	members := make([]utils.LiteProfileResponse, 0, len(roster.LiteProfiles))
 	for _, member := range roster.LiteProfiles {
 		members = append(members, member)
@@ -124,7 +141,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 	for idx, member := range members {
 		idx, member := idx, member
 		g.Go(func() error {
-			results[idx], errs[idx] = evaluatePromoMember(gctx, member, asOf)
+			results[idx], errs[idx] = evaluatePromoMember(gctx, member, asOf, rankModel)
 			return nil
 		})
 	}
@@ -151,7 +168,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 		return candidates[a].Username < candidates[b].Username
 	})
 
-	response := formatPromoResponse(position, asOf, candidates, skippedCount)
+	response := formatPromoResponse(position, asOf, candidates, skippedCount, rankModel != nil)
 	if err := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response}); err != nil {
 		captureDeferredEditFailure(i, "Promo", err)
 		return
@@ -166,17 +183,21 @@ func evaluatePromoMember(
 	ctx context.Context,
 	member utils.LiteProfileResponse,
 	asOf time.Time,
+	rankModel *viiRankModel,
 ) (*promoCandidate, error) {
 	utils.Debug("👤 Processing member", "username", member.User.Username)
 
 	rankShort := member.Rank.RankShort
-	if _, hasLadder := promotionRequirements[rankShort]; !hasLadder {
-		// No ladder for this rank (COL+, or unrecognized) — not a candidate,
-		// and not worth a milpac fetch.
+	_, hasLadder := promotionRequirements[rankShort]
+	if !hasLadder && rankModel == nil {
+		// No standard ladder for this rank (COL+, or unrecognized) and no
+		// §VII path this run — not a candidate, not worth a milpac fetch.
+		// With a rank model present the fetch must happen: §VII can restore a
+		// previously-held rank regardless of the standard ladder.
 		return nil, nil
 	}
 
-	// Course completions live in the full profile's service records.
+	// Course completions and §VII service history live in the full profile.
 	fullProfile, err := utils.GetMilpacByUsername(ctx, member.User.Username)
 	if err != nil {
 		return nil, fmt.Errorf("milpac fetch failed: %w", err)
@@ -191,7 +212,15 @@ func evaluatePromoMember(
 		fullProfile.Primary.PositionTitle,
 		asOf,
 	)
-	if !verdict.Eligible {
+
+	var vii *viiResult
+	if rankModel != nil {
+		v := viiAnalyze(fullProfile, rankModel, asOf)
+		vii = &v
+	}
+	viaVII := vii != nil && vii.EligibleNow
+
+	if !verdict.Eligible && !viaVII {
 		utils.Debug("⏳ Member not eligible", "username", member.User.Username, "days_until", verdict.DaysUntilEligible)
 		return nil, nil
 	}
@@ -201,19 +230,21 @@ func evaluatePromoMember(
 		return nil, fmt.Errorf("uniform URL parse failed: %w", err)
 	}
 
-	utils.Info("✨ Member eligible for promotion", "username", member.User.Username, "next_rank", verdict.NextRank)
+	utils.Info("✨ Member eligible for promotion", "username", member.User.Username, "next_rank", verdict.NextRank, "via_vii", viaVII)
 	return &promoCandidate{
 		Username:  member.User.Username,
 		MilpacURL: fmt.Sprintf("https://7cav.us/rosters/profile/%s", milpacID),
 		RankShort: rankShort,
 		Verdict:   verdict,
+		Vii:       vii,
+		ViaVII:    viaVII,
 	}, nil
 }
 
 // formatPromoResponse renders the final message. The disclaimer always
 // renders: eligibility is parsed from user-entered milpac data, so formatting
 // drift can silently skew results (same rationale as /afsm).
-func formatPromoResponse(position string, asOf time.Time, candidates []promoCandidate, skippedCount int) string {
+func formatPromoResponse(position string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) string {
 	const disclaimer = "⚠️ This command cannot be made completely accurate. Discretionary promotions still require S1 review — this is a candidate list, not an approval."
 
 	var b strings.Builder
@@ -229,15 +260,13 @@ func formatPromoResponse(position string, asOf time.Time, candidates []promoCand
 				b.WriteString(fmt.Sprintf("…and %d more (narrow the position filter to see them)", len(candidates)-promoMaxLines))
 				break
 			}
-			line := fmt.Sprintf("[%s](<%s>) %s → %s (%s", c.Username, c.MilpacURL, c.RankShort, c.Verdict.NextRank, c.Verdict.Type)
-			if len(c.Verdict.PendingDisplayCourses) > 0 {
-				line += ", pending: " + strings.Join(c.Verdict.PendingDisplayCourses, ", ")
-			}
-			line += ")\n"
-			b.WriteString(line)
+			b.WriteString(formatPromoLine(c))
 		}
 	}
 
+	if !viiActive {
+		b.WriteString("\nℹ️ Veteran Rank Retention (§VII) check unavailable this run (rank data fetch failed) — standard ladder only.")
+	}
 	if skippedCount > 0 {
 		noun := "members"
 		if skippedCount == 1 {
@@ -246,4 +275,26 @@ func formatPromoResponse(position string, asOf time.Time, candidates []promoCand
 		b.WriteString(fmt.Sprintf("\n⚠️ %d %s skipped due to errors (reported)", skippedCount, noun))
 	}
 	return b.String()
+}
+
+// formatPromoLine renders one candidate. §VII-only candidates show the
+// restoration target and the previously-held evidence; standard candidates
+// show the ladder step. A candidate eligible via both paths reads as
+// standard, with the §VII flag appended.
+func formatPromoLine(c promoCandidate) string {
+	if c.ViaVII && !c.Verdict.Eligible {
+		line := fmt.Sprintf("[%s](<%s>) %s → %s (§VII veteran retention", c.Username, c.MilpacURL, c.RankShort, c.Vii.Target.Short)
+		if c.Vii.TargetHeldDate != "" {
+			line += ", held " + c.Vii.TargetHeldDate
+		}
+		return line + ")\n"
+	}
+	line := fmt.Sprintf("[%s](<%s>) %s → %s (%s", c.Username, c.MilpacURL, c.RankShort, c.Verdict.NextRank, c.Verdict.Type)
+	if len(c.Verdict.PendingDisplayCourses) > 0 {
+		line += ", pending: " + strings.Join(c.Verdict.PendingDisplayCourses, ", ")
+	}
+	if c.ViaVII {
+		line += ", also §VII → " + c.Vii.Target.Short
+	}
+	return line + ")\n"
 }

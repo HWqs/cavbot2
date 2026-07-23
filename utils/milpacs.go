@@ -22,6 +22,7 @@ type ProfileResponse struct {
 	Secondary         []Position `json:"secondaries"`
 	Records           []Record   `json:"records"`
 	Awards            []Award    `json:"awards"`
+	Mos               string     `json:"mos"`
 	JoinDate          string     `json:"joinDate"`
 	PromotionDate     string     `json:"promotionDate"`
 	DiscordID         string     `json:"discordId"`
@@ -140,6 +141,23 @@ func makeAPIRequest[T any](ctx context.Context, path string, identifier string) 
 	Warn("API non-2xx response", "status", status, "path", pathPrefix, "identifier", identifier, "body", body)
 
 	return nil, fmt.Errorf("%s API returned %d %s", pathPrefix, status, http.StatusText(status))
+}
+
+// RankInfo is one entry of the /milpacs/ranks reference list.
+type RankInfo struct {
+	RankShort        string `json:"rankShort"`
+	RankFull         string `json:"rankFull"`
+	RankDisplayOrder int    `json:"rankDisplayOrder"`
+	RankID           string `json:"rankId"`
+}
+
+type RanksResponse struct {
+	Ranks []RankInfo `json:"ranks"`
+}
+
+// GetRanks fetches the rank reference list (short/full names + display order).
+func GetRanks(ctx context.Context) (*RanksResponse, error) {
+	return makeAPIRequest[RanksResponse](ctx, "milpacs/ranks", "ranks")
 }
 
 func GetMilpacByUsername(ctx context.Context, username string) (*ProfileResponse, error) {
