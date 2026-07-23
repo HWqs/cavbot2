@@ -51,6 +51,10 @@ type promoCandidate struct {
 // candidate lists span multiple messages instead of truncating.
 const promoMessageLimit = 1900
 
+// promoDisclaimer heads every /promo output (list and single-trooper), since
+// both derive eligibility from hand-entered milpac data.
+const promoDisclaimer = "⚠️ Due to potential discrepancies in MILPAC notation, this command may produce inaccurate results. Treat the output of this command as a candidate list, not a guarantee. Please report inaccurate outputs to S6 so that we may investigate and repair."
+
 // promoRankOrder lists milpac rank short forms most-senior-first (military
 // precedence: officers, then warrants, then enlisted — the milpac display
 // order). It drives candidate-list sorting; ranks not listed sort last.
@@ -419,11 +423,9 @@ func evaluatePromoMember(
 // is parsed from user-entered milpac data, so formatting drift can silently
 // skew results (same rationale as /afsm).
 func formatPromoMessages(scope, promoType string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) []string {
-	const disclaimer = "⚠️ Due to potential discrepancies in MILPAC notation, this command may produce inaccurate results. Treat the output of this command as a candidate list, not a guarantee. Please report inaccurate outputs to S6 so that we may investigate and repair."
-
 	var messages []string
 	var b strings.Builder
-	b.WriteString(disclaimer)
+	b.WriteString(promoDisclaimer)
 	b.WriteString("\n\n")
 
 	if len(candidates) == 0 {
@@ -689,7 +691,14 @@ func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, 
 		profile.User.Username, profile.Rank.RankShort, promoDate(asOf))
 
 	if v.NoRequirements {
-		b.WriteString("Standard ladder: no promotion ladder defined for this rank.\n")
+		if _, known := promoRankSeniority[strings.ToUpper(profile.Rank.RankShort)]; known {
+			// A recognized rank with no ladder entry is topped out (1SG, CSM,
+			// SGM, COL and general officers) — advancement is by appointment,
+			// not a standard promotion. Say that rather than "no ladder".
+			fmt.Fprintf(&b, "Standard ladder: **%s is at the top of the standard ladder** — any further advancement is by appointment, not automatic/discretionary promotion.\n", profile.Rank.RankShort)
+		} else {
+			b.WriteString("Standard ladder: no standard promotion ladder for this rank.\n")
+		}
 	} else {
 		status := "not yet eligible"
 		if v.Eligible {
@@ -748,7 +757,8 @@ func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, 
 		b.WriteString("\nVeteran Rank Retention (§VII): not applicable.")
 	}
 
-	b.WriteString("\n\n⚠️ Parsed from milpac data — verify before acting. Discretionary promotions still require S1 review.")
+	b.WriteString("\n\n")
+	b.WriteString(promoDisclaimer)
 	return b.String()
 }
 

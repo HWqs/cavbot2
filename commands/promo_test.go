@@ -725,6 +725,29 @@ func TestRunPromoUserModeVerdict(t *testing.T) {
 	}
 }
 
+// A recognized rank with no ladder entry (1SG) reads as topped out, not
+// "no ladder defined", and carries the shared S6 disclaimer.
+func TestRunPromoUserModeToppedOutRank(t *testing.T) {
+	profiles := map[string]utils.ProfileResponse{
+		"Top.T": promoFullProfile("Top.T", "1SG", "2024-01-01", "2022-01-01", "First Sergeant A/ACD"),
+	}
+	servePromoAPIWithRanks(t, utils.LiteRosterResponse{}, profiles, viiTestRanks())
+
+	f := &fakeResponder{}
+	runPromo(f, promoUserInteraction("Top.T", ""), afsmRefDate)
+
+	content := lastEditContent(f.Calls())
+	if !strings.Contains(content, "top of the standard ladder") {
+		t.Errorf("topped-out rank message missing: %q", content)
+	}
+	if strings.Contains(content, "no promotion ladder defined") {
+		t.Errorf("old 'no ladder defined' wording should be gone: %q", content)
+	}
+	if !strings.Contains(content, "report inaccurate outputs to S6") {
+		t.Errorf("shared disclaimer missing from verdict: %q", content)
+	}
+}
+
 func TestRunPromoUserModeViiVeteran(t *testing.T) {
 	vet := viiVetProfile()
 	profiles := map[string]utils.ProfileResponse{"Vet.V": *vet}
