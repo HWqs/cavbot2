@@ -22,6 +22,7 @@ func NewRegistry() *Registry {
 		S3AAR(),
 		Promo(),
 		PromoSweepNow(),
+		BilletAudit(),
 	)
 	return r
 }
