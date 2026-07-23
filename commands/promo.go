@@ -82,6 +82,20 @@ func promoDate(t time.Time) string {
 	return strings.ToUpper(t.Format("02Jan06"))
 }
 
+// parsePromoDate parses user-entered dates in the org's DDMMMYY style
+// (case-insensitive, e.g. 30JUL26); YYYY-MM-DD is accepted as a fallback.
+func parsePromoDate(s string) (time.Time, error) {
+	v := strings.TrimSpace(s)
+	if len(v) == 7 {
+		// Go month names parse case-sensitively — canonicalize to "02Jan06".
+		canon := v[:2] + strings.ToUpper(v[2:3]) + strings.ToLower(v[3:5]) + v[5:]
+		if t, err := time.Parse("02Jan06", canon); err == nil {
+			return t, nil
+		}
+	}
+	return time.Parse("2006-01-02", v)
+}
+
 // scopeDisplay renders a scope label for prose: the activeduty sentinel reads
 // "active duty"; anything else as typed.
 func scopeDisplay(scope string) string {
@@ -139,7 +153,7 @@ func Promo() Command {
 				{
 					Type:        discordgo.ApplicationCommandOptionString,
 					Name:        "as_of",
-					Description: "Check eligibility as of this date (YYYY-MM-DD, default today)",
+					Description: "Check eligibility as of this date (DDMMMYY, e.g. 30JUL26; default today)",
 					Required:    false,
 				},
 				{
@@ -191,9 +205,9 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 		case "export_csv":
 			exportCSV = opt.BoolValue()
 		case "as_of":
-			parsed, err := time.Parse("2006-01-02", opt.StringValue())
+			parsed, err := parsePromoDate(opt.StringValue())
 			if err != nil {
-				utils.HandleError(r, i, fmt.Sprintf("❌ Invalid as_of date %q — use YYYY-MM-DD", opt.StringValue()))
+				utils.HandleError(r, i, fmt.Sprintf("❌ Invalid as_of date %q — use DDMMMYY (e.g. 30JUL26)", opt.StringValue()))
 				return
 			}
 			asOf = parsed

@@ -109,14 +109,29 @@ func TestRunPromoAsOfDateExpandsEligibility(t *testing.T) {
 	serveRosterAndProfiles(t, roster, 200, profiles)
 
 	f := &fakeResponder{}
-	runPromo(f, promoInteraction("ACD", "2026-07-01"), afsmRefDate)
+	// as_of in the org's DDMMMYY format, lowercase to prove case-insensitivity.
+	runPromo(f, promoInteraction("ACD", "01jul26"), afsmRefDate)
 
 	content := lastEditContent(f.Calls())
 	if !strings.Contains(content, "Fresh.F") {
-		t.Errorf("member should be eligible as of 2026-07-01: %q", content)
+		t.Errorf("member should be eligible as of 01JUL26: %q", content)
 	}
 	if !strings.Contains(content, "01JUL26") {
 		t.Errorf("as-of date missing from header (want DDMMMYY): %q", content)
+	}
+}
+
+func TestParsePromoDate(t *testing.T) {
+	for _, ok := range []string{"30JUL26", "30jul26", "30Jul26", "2026-07-30"} {
+		got, err := parsePromoDate(ok)
+		if err != nil || got.Format("2006-01-02") != "2026-07-30" {
+			t.Errorf("parsePromoDate(%q) = %v, %v; want 2026-07-30", ok, got, err)
+		}
+	}
+	for _, bad := range []string{"julyish", "30JULY26", "2026/07/30", ""} {
+		if _, err := parsePromoDate(bad); err == nil {
+			t.Errorf("parsePromoDate(%q) should fail", bad)
+		}
 	}
 }
 
