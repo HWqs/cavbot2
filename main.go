@@ -105,6 +105,13 @@ func main() {
 
 	registry := commands.NewRegistry()
 
+	// Temp voice channels (issue #100): handlers must be registered before
+	// dg.Open() so the initial GUILD_CREATE seeds voice-state tracking and
+	// sweeps orphaned temp channels.
+	if tempVCCfg, ok := commands.LoadTempVCConfig(GuildID); ok {
+		commands.StartTempVC(dg, tempVCCfg)
+	}
+
 	dg.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		defer utils.RecoverPanic("interaction-handler")
 		switch i.Type {
