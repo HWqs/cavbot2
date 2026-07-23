@@ -159,7 +159,7 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 			)
 			bodies = []string{fmt.Sprintf("⚠️ Promotion sweep: the %s roster came back empty — this shouldn't happen for a configured position. The issue has been reported.", position)}
 		} else {
-			bodies = formatPromoMessages(position, asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
+			bodies = formatPromoMessages(position, "", asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
 			bodies[0] = "📋 **Weekly promotion sweep**\n" + bodies[0]
 		}
 		for _, body := range bodies {

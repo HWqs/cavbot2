@@ -77,6 +77,41 @@ func promoRankIndex(rankShort string) int {
 	return len(promoRankOrder)
 }
 
+// promoDate renders dates in the org's DDMMMYY style (e.g. 23JUL26).
+func promoDate(t time.Time) string {
+	return strings.ToUpper(t.Format("02Jan06"))
+}
+
+// scopeDisplay renders a scope label for prose: the activeduty sentinel reads
+// "active duty"; anything else as typed.
+func scopeDisplay(scope string) string {
+	if isActiveDutyScope(scope) {
+		return "active duty"
+	}
+	return scope
+}
+
+// promoPhrase is the "<type> promotion" noun phrase for sentences, e.g.
+// "No active duty members eligible for lateral promotion as of 23JUL26".
+func promoPhrase(promoType string) string {
+	switch promoType {
+	case "":
+		return "promotion"
+	case promoTypeVii:
+		return "§VII promotion"
+	default:
+		return promoType + " promotion"
+	}
+}
+
+// upperFirst capitalizes the leading ASCII letter for sentence starts.
+func upperFirst(s string) string {
+	if s == "" || s[0] < 'a' || s[0] > 'z' {
+		return s
+	}
+	return string(s[0]-'a'+'A') + s[1:]
+}
+
 func Promo() Command {
 	return Command{
 		Definition: &discordgo.ApplicationCommand{
@@ -187,20 +222,22 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 		return
 	}
 
-	// Scope label for headers, filenames, and logs: the position as typed, or
-	// the rank in canonical upper-case form, tagged when a type filter is on.
+	// Scope label: the position as typed, or the rank in canonical upper-case
+	// form. Prose uses scopeDisplay/promoPhrase; filenames and logs keep the
+	// raw scope (plus a type tag for logs).
 	scope := position
 	if rank != "" {
 		scope = strings.ToUpper(rank)
 	}
+	logScope := scope
 	if promoType != "" {
-		scope += " (" + promoType + ")"
+		logScope += " (" + promoType + ")"
 	}
 
 	err := r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: fmt.Sprintf("Checking promotion eligibility for %s as of %s...", scope, asOf.Format("2006-01-02")),
+			Content: fmt.Sprintf("Checking %s eligibility for %s as of %s...", promoPhrase(promoType), scopeDisplay(scope), promoDate(asOf)),
 		},
 	})
 	if err != nil {
@@ -240,12 +277,12 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 	}
 
 	if exportCSV {
-		sendPromoCSV(r, i, scope, asOf, res)
-		utils.Info("✨ Done!", "command", "Promo", "position", scope, "eligible", len(res.Candidates), "output", "csv")
+		sendPromoCSV(r, i, scope, promoType, asOf, res)
+		utils.Info("✨ Done!", "command", "Promo", "position", logScope, "eligible", len(res.Candidates), "output", "csv")
 		return
 	}
 
-	messages := formatPromoMessages(scope, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
+	messages := formatPromoMessages(scope, promoType, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
 	if err := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &messages[0]}); err != nil {
 		captureDeferredEditFailure(i, "Promo", err)
 		return
@@ -254,11 +291,11 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 	// reported and stops the remainder (the same channel would fail again).
 	for _, m := range messages[1:] {
 		if err := r.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: m}); err != nil {
-			utils.CaptureError("❌ Promo follow-up send failed", err, "position", scope)
+			utils.CaptureError("❌ Promo follow-up send failed", err, "position", logScope)
 			return
 		}
 	}
-	utils.Info("✨ Done!", "command", "Promo", "position", scope, "eligible", len(res.Candidates))
+	utils.Info("✨ Done!", "command", "Promo", "position", logScope, "eligible", len(res.Candidates))
 }
 
 // filterPromoCandidates keeps only candidates eligible via the given
@@ -367,18 +404,18 @@ func evaluatePromoMember(
 // footer notes land on the last. The disclaimer always renders: eligibility
 // is parsed from user-entered milpac data, so formatting drift can silently
 // skew results (same rationale as /afsm).
-func formatPromoMessages(position string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) []string {
-	const disclaimer = "⚠️ This command cannot be made completely accurate. Discretionary promotions still require S1 review — this is a candidate list, not an approval."
+func formatPromoMessages(scope, promoType string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) []string {
+	const disclaimer = "⚠️ Due to potential discrepancies in MILPAC notation, this command may produce inaccurate results. Treat the output of this command as a candidate list, not a guarantee."
 
 	var messages []string
 	var b strings.Builder
 	b.WriteString(disclaimer)
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
 	if len(candidates) == 0 {
-		b.WriteString(fmt.Sprintf("No %s members eligible for promotion as of %s", position, asOf.Format("2006-01-02")))
+		b.WriteString(fmt.Sprintf("No %s members eligible for %s as of %s", scopeDisplay(scope), promoPhrase(promoType), promoDate(asOf)))
 	} else {
-		b.WriteString(fmt.Sprintf("**%s members eligible for promotion as of %s:**\n", position, asOf.Format("2006-01-02")))
+		b.WriteString(fmt.Sprintf("**%s members eligible for %s as of %s:**\n", upperFirst(scopeDisplay(scope)), promoPhrase(promoType), promoDate(asOf)))
 		for _, c := range candidates {
 			line := formatPromoLine(c)
 			if b.Len()+len(line) > promoMessageLimit {
@@ -577,7 +614,7 @@ func runPromoUser(r utils.InteractionResponder, i *discordgo.InteractionCreate, 
 	err := r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: fmt.Sprintf("Checking promotion eligibility for %s as of %s...", username, asOf.Format("2006-01-02")),
+			Content: fmt.Sprintf("Checking promotion eligibility for %s as of %s...", username, promoDate(asOf)),
 		},
 	})
 	if err != nil {
@@ -635,7 +672,7 @@ func checkmark(ok bool) string {
 func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, vii *viiResult, viiActive bool, asOf time.Time) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**Promotion verdict for %s (%s) as of %s**\n",
-		profile.User.Username, profile.Rank.RankShort, asOf.Format("2006-01-02"))
+		profile.User.Username, profile.Rank.RankShort, promoDate(asOf))
 
 	if v.NoRequirements {
 		b.WriteString("Standard ladder: no promotion ladder defined for this rank.\n")
@@ -723,8 +760,10 @@ func formatDays(days int) string {
 // sendPromoCSV attaches the full candidate list as a CSV file, following the
 // /awol force_file_output pattern (issue #4 export optional). CSV escapes are
 // handled by encoding/csv; the writer targets a strings.Builder so no error
-// path exists in practice, but Flush errors are still surfaced.
-func sendPromoCSV(r utils.InteractionResponder, i *discordgo.InteractionCreate, position string, asOf time.Time, scan promoScan) {
+// path exists in practice, but Flush errors are still surfaced. The filename
+// keeps machine-friendly forms (raw scope, ISO date) for sorting; the message
+// prose follows the org style.
+func sendPromoCSV(r utils.InteractionResponder, i *discordgo.InteractionCreate, scope, promoType string, asOf time.Time, scan promoScan) {
 	var sb strings.Builder
 	w := csv.NewWriter(&sb)
 	_ = w.Write([]string{
@@ -762,13 +801,17 @@ func sendPromoCSV(r utils.InteractionResponder, i *discordgo.InteractionCreate, 
 		return
 	}
 
+	fileScope := strings.ReplaceAll(scope, "/", "-")
+	if promoType != "" {
+		fileScope += "_" + promoType
+	}
 	file := &discordgo.File{
-		Name:        fmt.Sprintf("promo_report_%s_%s.csv", strings.ReplaceAll(position, "/", "-"), asOf.Format("2006-01-02")),
+		Name:        fmt.Sprintf("promo_report_%s_%s.csv", fileScope, asOf.Format("2006-01-02")),
 		ContentType: "text/csv",
 		Reader:      strings.NewReader(sb.String()),
 	}
-	content := fmt.Sprintf("Promotion eligibility report for %s as of %s — %d candidate(s).",
-		position, asOf.Format("2006-01-02"), len(scan.Candidates))
+	content := fmt.Sprintf("%s eligibility report for %s as of %s — %d candidate(s).",
+		upperFirst(promoPhrase(promoType)), scopeDisplay(scope), promoDate(asOf), len(scan.Candidates))
 	if scan.SkippedCount > 0 {
 		content += fmt.Sprintf(" ⚠️ %d skipped due to errors (reported).", scan.SkippedCount)
 	}

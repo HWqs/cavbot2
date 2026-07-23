@@ -115,8 +115,8 @@ func TestRunPromoAsOfDateExpandsEligibility(t *testing.T) {
 	if !strings.Contains(content, "Fresh.F") {
 		t.Errorf("member should be eligible as of 2026-07-01: %q", content)
 	}
-	if !strings.Contains(content, "2026-07-01") {
-		t.Errorf("as-of date missing from header: %q", content)
+	if !strings.Contains(content, "01JUL26") {
+		t.Errorf("as-of date missing from header (want DDMMMYY): %q", content)
 	}
 }
 
@@ -210,7 +210,7 @@ func TestFormatPromoMessagesChunksLongLists(t *testing.T) {
 			Verdict:   promoEligibility{Eligible: true, NextRank: "PFC", Type: "automatic"},
 		}
 	}
-	messages := formatPromoMessages("ACD", mustParseDate("2026-05-15"), candidates, 1, false)
+	messages := formatPromoMessages("ACD", "", mustParseDate("2026-05-15"), candidates, 1, false)
 	if len(messages) < 2 {
 		t.Fatalf("80 candidates should span multiple messages, got %d", len(messages))
 	}
@@ -289,7 +289,7 @@ func TestRunPromoLongListSendsFollowups(t *testing.T) {
 }
 
 func TestFormatPromoMessagesNoCandidates(t *testing.T) {
-	messages := formatPromoMessages("ACD", mustParseDate("2026-05-15"), nil, 0, true)
+	messages := formatPromoMessages("ACD", "", mustParseDate("2026-05-15"), nil, 0, true)
 	if len(messages) != 1 {
 		t.Fatalf("expected a single message, got %d", len(messages))
 	}
@@ -336,7 +336,7 @@ func TestRunPromoUsesInjectedNow(t *testing.T) {
 	runPromo(f, promoInteraction("ACD", ""), injected)
 
 	content := lastEditContent(f.Calls())
-	if !strings.Contains(content, "2030-01-01") {
+	if !strings.Contains(content, "01JAN30") {
 		t.Errorf("header should show injected date, got %q", content)
 	}
 }
@@ -640,8 +640,8 @@ func TestRunPromoTypeFilters(t *testing.T) {
 					t.Errorf("%s must be filtered out of type:%s: %q", other, tc.promoType, content)
 				}
 			}
-			if !strings.Contains(content, "("+tc.promoType+")") {
-				t.Errorf("header should carry the type tag: %q", content)
+			if !strings.Contains(content, "eligible for "+promoPhrase(tc.promoType)) {
+				t.Errorf("header should carry the type phrase: %q", content)
 			}
 		})
 	}
@@ -763,8 +763,8 @@ func TestRunPromoDefaultsToActiveDuty(t *testing.T) {
 	}}, afsmRefDate)
 
 	content := lastEditContent(f.Calls())
-	if !strings.Contains(content, "activeduty members eligible") {
-		t.Errorf("bare /promo should default to the activeduty scope: %q", content)
+	if !strings.Contains(content, "Active duty members eligible") {
+		t.Errorf("bare /promo should default to the active duty scope: %q", content)
 	}
 	if !strings.Contains(content, "Ready.R") {
 		t.Errorf("default scan missing candidate: %q", content)
