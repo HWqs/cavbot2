@@ -157,7 +157,7 @@ func Promo() Command {
 						{Name: "automatic", Value: promoTypeAutomatic},
 						{Name: "discretionary", Value: promoTypeDiscretionary},
 						{Name: "vii (veteran rank retention)", Value: promoTypeVii},
-						{Name: "lateral (wings → warrant)", Value: promoTypeLateral},
+						{Name: "lateral", Value: promoTypeLateral},
 					},
 				},
 			},
@@ -405,7 +405,7 @@ func evaluatePromoMember(
 // is parsed from user-entered milpac data, so formatting drift can silently
 // skew results (same rationale as /afsm).
 func formatPromoMessages(scope, promoType string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) []string {
-	const disclaimer = "⚠️ Due to potential discrepancies in MILPAC notation, this command may produce inaccurate results. Treat the output of this command as a candidate list, not a guarantee."
+	const disclaimer = "⚠️ Due to potential discrepancies in MILPAC notation, this command may produce inaccurate results. Treat the output of this command as a candidate list, not a guarantee. Please report inaccurate outputs to S6 so that we may investigate and repair."
 
 	var messages []string
 	var b strings.Builder

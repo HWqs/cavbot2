@@ -210,12 +210,12 @@ func TestCalculatePromotionEligibility(t *testing.T) {
 			position: "Rifleman", wantEligible: true, wantNext: "CPL/WO1",
 		},
 		{
-			name: "CPL in SL billet with TIG+TIS eligible; ODS surfaces as pending",
+			name: "CPL in SL billet with TIG+TIS eligible; no pending-course noise (ODS dropped per S1)",
 			rank: "CPL", promotionDate: "2025-12-01", joinDate: "2025-05-01",
 			position: "Section Leader 1/1/A", wantEligible: true, wantNext: "SGT",
 			check: func(t *testing.T, v promoEligibility) {
-				if len(v.PendingDisplayCourses) != 1 || v.PendingDisplayCourses[0] != "ODS" {
-					t.Errorf("PendingDisplayCourses = %v, want [ODS]", v.PendingDisplayCourses)
+				if len(v.PendingDisplayCourses) != 0 {
+					t.Errorf("PendingDisplayCourses = %v, want none (ODS is a commissioning concern, not /promo's)", v.PendingDisplayCourses)
 				}
 			},
 		},

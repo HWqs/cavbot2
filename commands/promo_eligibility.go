@@ -32,20 +32,24 @@ type promotionRequirement struct {
 	Billets []string
 }
 
-// promotionRequirements is keyed by rankShort. Transcribed verbatim from
-// the source tool's requirements table (7CAV-R-023).
+// promotionRequirements is keyed by rankShort. Transcribed from the source
+// tool's requirements table (7CAV-R-023), with one deliberate deviation: the
+// source surfaced ODS as an informational "pending" course on the NCO ladder,
+// but ODS only matters for commissioning (which needs a Platoon Leader
+// assignment first) — S1 asked for it to be dropped from /promo output
+// (2026-07-23). DisplayCourses stays plumbed for future informational needs.
 var promotionRequirements = map[string]promotionRequirement{
 	"PVT": {NextRank: "PFC", TigMonths: 1, Type: "automatic"},
 	"PFC": {NextRank: "SPC", TigMonths: 2, Type: "automatic"},
 	"SPC": {NextRank: "CPL/WO1", TigMonths: 4, Type: "automatic", Courses: []string{"ncoaPhase1", "ncoaPhase2", "sac"}},
-	"CPL": {NextRank: "SGT", TigMonths: 4, TisMonths: 9, Type: "discretionary", DisplayCourses: []string{"ods"}, Billets: []string{"ASL", "SL"}},
-	"WO1": {NextRank: "CW2", TigMonths: 4, TisMonths: 9, Type: "discretionary", DisplayCourses: []string{"ods"}, Billets: []string{"ASL", "SL"}},
-	"SGT": {NextRank: "SSG", TigMonths: 6, TisMonths: 15, Type: "discretionary", DisplayCourses: []string{"ods"}, Billets: []string{"SL", "PSG"}},
-	"CW2": {NextRank: "CW3", TigMonths: 6, TisMonths: 15, Type: "discretionary", DisplayCourses: []string{"ods"}, Billets: []string{"SL", "PSG"}},
-	"SSG": {NextRank: "SFC", TigMonths: 6, TisMonths: 22, Type: "discretionary", DisplayCourses: []string{"ods"}, Billets: []string{"PSG"}},
-	"CW3": {NextRank: "CW4", TigMonths: 6, TisMonths: 22, Type: "discretionary", DisplayCourses: []string{"ods"}, Billets: []string{"PSG"}},
-	"SFC": {NextRank: "MSG", TigMonths: 6, TisMonths: 28, Type: "discretionary", DisplayCourses: []string{"ods"}, Billets: []string{"PSG"}},
-	"CW4": {NextRank: "CW5", TigMonths: 6, TisMonths: 28, Type: "discretionary", DisplayCourses: []string{"ods"}, Billets: []string{"PSG"}},
+	"CPL": {NextRank: "SGT", TigMonths: 4, TisMonths: 9, Type: "discretionary", Billets: []string{"ASL", "SL"}},
+	"WO1": {NextRank: "CW2", TigMonths: 4, TisMonths: 9, Type: "discretionary", Billets: []string{"ASL", "SL"}},
+	"SGT": {NextRank: "SSG", TigMonths: 6, TisMonths: 15, Type: "discretionary", Billets: []string{"SL", "PSG"}},
+	"CW2": {NextRank: "CW3", TigMonths: 6, TisMonths: 15, Type: "discretionary", Billets: []string{"SL", "PSG"}},
+	"SSG": {NextRank: "SFC", TigMonths: 6, TisMonths: 22, Type: "discretionary", Billets: []string{"PSG"}},
+	"CW3": {NextRank: "CW4", TigMonths: 6, TisMonths: 22, Type: "discretionary", Billets: []string{"PSG"}},
+	"SFC": {NextRank: "MSG", TigMonths: 6, TisMonths: 28, Type: "discretionary", Billets: []string{"PSG"}},
+	"CW4": {NextRank: "CW5", TigMonths: 6, TisMonths: 28, Type: "discretionary", Billets: []string{"PSG"}},
 	// Officer billet gates: a Platoon Leader rates 2LT-1LT, so PL satisfies
 	// the 1LT gate but NOT the CPT gate.
 	"2LT": {NextRank: "1LT", TigMonths: 6, Type: "discretionary", Billets: []string{"PL", "XO", "CO", "DEPT"}},
