@@ -2,11 +2,11 @@ package commands
 
 // /promo — S1 promotion checker (issue 7Cav/cavbot2#4).
 //
-// Lists every trooper in a position scope whose promotion would be possible
-// as of a given date (default today), via either the standard ladder
-// (promo_eligibility.go) or the Veteran Rank Retention Ch.4 §VII alternative
-// path (vii.go). Both engines are ports of the author's internal S1
-// promotion tooling.
+// Lists every trooper in a scope — a position/unit, or all Active Duty
+// holders of one rank — whose promotion would be possible as of a given date
+// (default today), via either the standard ladder (promo_eligibility.go) or
+// the Veteran Rank Retention Ch.4 §VII alternative path (vii.go). Both
+// engines are ports of the author's internal S1 promotion tooling.
 
 import (
 	"context"
@@ -33,9 +33,36 @@ type promoCandidate struct {
 	ViaVII bool
 }
 
-// promoMaxLines bounds output well under Discord's 2000-char message limit;
-// each candidate line runs ~100 chars plus header and disclaimer.
-const promoMaxLines = 15
+// promoMessageLimit is the per-message packing bound, under Discord's
+// 2000-character cap with headroom for the sweep's header prefix. Long
+// candidate lists span multiple messages instead of truncating.
+const promoMessageLimit = 1900
+
+// promoRankOrder lists milpac rank short forms most-senior-first (military
+// precedence: officers, then warrants, then enlisted — the milpac display
+// order). It drives candidate-list sorting; ranks not listed sort last.
+var promoRankOrder = []string{
+	"GOA", "GEN", "LTG", "MG", "BG", "COL", "LTC", "MAJ", "CPT", "1LT", "2LT",
+	"CW5", "CW4", "CW3", "CW2", "WO1",
+	"CSM", "SGM", "1SG", "MSG", "SFC", "SSG", "SGT", "CPL", "SPC", "PFC", "PVT", "RCT",
+}
+
+var promoRankSeniority = func() map[string]int {
+	m := make(map[string]int, len(promoRankOrder))
+	for idx, rank := range promoRankOrder {
+		m[rank] = idx
+	}
+	return m
+}()
+
+// promoRankIndex returns the sort key for a rank short form: seniority index
+// (lower = more senior), with unknown ranks after every known one.
+func promoRankIndex(rankShort string) int {
+	if idx, ok := promoRankSeniority[strings.ToUpper(rankShort)]; ok {
+		return idx
+	}
+	return len(promoRankOrder)
+}
 
 func Promo() Command {
 	return Command{
@@ -53,6 +80,12 @@ func Promo() Command {
 					Type:        discordgo.ApplicationCommandOptionString,
 					Name:        "user",
 					Description: "Check one trooper by forum username (full verdict breakdown)",
+					Required:    false,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "rank",
+					Description: "Check every active-duty trooper at this rank (milpac short form, e.g. PFC)",
 					Required:    false,
 				},
 				{
@@ -82,7 +115,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 	username, discordID := interactionUsernameAndID(i)
 	utils.Info("🚀 Starting Promo Check", "command", "Promo", "username", username, "discord_id", discordID)
 
-	position, user := "", ""
+	position, user, rank := "", "", ""
 	exportCSV := false
 	asOf := nowUTC
 	for _, opt := range i.ApplicationCommandData().Options {
@@ -91,6 +124,8 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 			position = opt.StringValue()
 		case "user":
 			user = opt.StringValue()
+		case "rank":
+			rank = opt.StringValue()
 		case "export_csv":
 			exportCSV = opt.BoolValue()
 		case "as_of":
@@ -102,12 +137,18 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 			asOf = parsed
 		}
 	}
-	utils.Debug("🔍 Processing promo options", "position", position, "user", user, "as_of", asOf.Format("2006-01-02"))
+	utils.Debug("🔍 Processing promo options", "position", position, "user", user, "rank", rank, "as_of", asOf.Format("2006-01-02"))
 
-	// Exactly one of position / user selects the mode; Discord can't express
-	// mutually-exclusive options, so validate here.
-	if (position == "") == (user == "") {
-		utils.HandleError(r, i, "❌ Provide exactly one of `position` (scope check) or `user` (single-trooper verdict).")
+	// Exactly one of position / user / rank selects the mode; Discord can't
+	// express mutually-exclusive options, so validate here.
+	modes := 0
+	for _, v := range []string{position, user, rank} {
+		if v != "" {
+			modes++
+		}
+	}
+	if modes != 1 {
+		utils.HandleError(r, i, "❌ Provide exactly one of `position` (scope check), `user` (single-trooper verdict), or `rank` (rank-wide check).")
 		return
 	}
 	if user != "" {
@@ -115,10 +156,17 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 		return
 	}
 
+	// Scope label for headers, filenames, and logs: the position as typed, or
+	// the rank in canonical upper-case form.
+	scope := position
+	if rank != "" {
+		scope = strings.ToUpper(rank)
+	}
+
 	err := r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: fmt.Sprintf("Checking promotion eligibility for %s as of %s...", position, asOf.Format("2006-01-02")),
+			Content: fmt.Sprintf("Checking promotion eligibility for %s as of %s...", scope, asOf.Format("2006-01-02")),
 		},
 	})
 	if err != nil {
@@ -132,31 +180,48 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	res, err := collectPromoCandidates(ctx, position, asOf)
+	var res promoScan
+	if rank != "" {
+		res, err = collectPromoCandidatesByRank(ctx, rank, asOf)
+	} else {
+		res, err = collectPromoCandidates(ctx, position, asOf)
+	}
 	if err != nil {
 		utils.CaptureError("❌ Roster fetch failed", err)
 		utils.HandleError(r, i, fmt.Sprintf("❌ Failed to fetch roster: %v", err))
 		return
 	}
-	// Position is user-supplied, so an empty roster is a plausible user
+	// Position/rank are user-supplied, so an empty roster is a plausible user
 	// outcome — message only, no Sentry (ADR 0002).
 	if res.EmptyRoster {
-		utils.HandleError(r, i, emptyRosterSearchMessage(position))
+		if rank != "" {
+			utils.HandleError(r, i, fmt.Sprintf("❌ No active-duty troopers hold rank %q — use the milpac short form (e.g. PFC, SGT, CW2).", rank))
+		} else {
+			utils.HandleError(r, i, emptyRosterSearchMessage(position))
+		}
 		return
 	}
 
 	if exportCSV {
-		sendPromoCSV(r, i, position, asOf, res)
-		utils.Info("✨ Done!", "command", "Promo", "position", position, "eligible", len(res.Candidates), "output", "csv")
+		sendPromoCSV(r, i, scope, asOf, res)
+		utils.Info("✨ Done!", "command", "Promo", "position", scope, "eligible", len(res.Candidates), "output", "csv")
 		return
 	}
 
-	response := formatPromoResponse(position, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
-	if err := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response}); err != nil {
+	messages := formatPromoMessages(scope, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
+	if err := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &messages[0]}); err != nil {
 		captureDeferredEditFailure(i, "Promo", err)
 		return
 	}
-	utils.Info("✨ Done!", "command", "Promo", "position", position, "eligible", len(res.Candidates))
+	// Long lists continue in follow-up messages; a failed follow-up is
+	// reported and stops the remainder (the same channel would fail again).
+	for _, m := range messages[1:] {
+		if err := r.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: m}); err != nil {
+			utils.CaptureError("❌ Promo follow-up send failed", err, "position", scope)
+			return
+		}
+	}
+	utils.Info("✨ Done!", "command", "Promo", "position", scope, "eligible", len(res.Candidates))
 }
 
 // evaluatePromoMember returns (candidate, nil) when the trooper is eligible
@@ -224,12 +289,16 @@ func evaluatePromoMember(
 	}, nil
 }
 
-// formatPromoResponse renders the final message. The disclaimer always
-// renders: eligibility is parsed from user-entered milpac data, so formatting
-// drift can silently skew results (same rationale as /afsm).
-func formatPromoResponse(position string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) string {
+// formatPromoMessages renders the final output as one or more Discord-sized
+// messages: every candidate renders, with long lists split across messages
+// rather than truncated. The first message carries the disclaimer and header;
+// footer notes land on the last. The disclaimer always renders: eligibility
+// is parsed from user-entered milpac data, so formatting drift can silently
+// skew results (same rationale as /afsm).
+func formatPromoMessages(position string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) []string {
 	const disclaimer = "⚠️ This command cannot be made completely accurate. Discretionary promotions still require S1 review — this is a candidate list, not an approval."
 
+	var messages []string
 	var b strings.Builder
 	b.WriteString(disclaimer)
 	b.WriteString("\n")
@@ -238,26 +307,37 @@ func formatPromoResponse(position string, asOf time.Time, candidates []promoCand
 		b.WriteString(fmt.Sprintf("No %s members eligible for promotion as of %s", position, asOf.Format("2006-01-02")))
 	} else {
 		b.WriteString(fmt.Sprintf("**%s members eligible for promotion as of %s:**\n", position, asOf.Format("2006-01-02")))
-		for idx, c := range candidates {
-			if idx >= promoMaxLines {
-				b.WriteString(fmt.Sprintf("…and %d more (narrow the position filter to see them)", len(candidates)-promoMaxLines))
-				break
+		for _, c := range candidates {
+			line := formatPromoLine(c)
+			if b.Len()+len(line) > promoMessageLimit {
+				messages = append(messages, strings.TrimRight(b.String(), "\n"))
+				b.Reset()
 			}
-			b.WriteString(formatPromoLine(c))
+			b.WriteString(line)
 		}
 	}
 
+	var footer strings.Builder
 	if !viiActive {
-		b.WriteString("\nℹ️ Veteran Rank Retention (§VII) check unavailable this run (rank data fetch failed) — standard ladder only.")
+		footer.WriteString("\nℹ️ Veteran Rank Retention (§VII) check unavailable this run (rank data fetch failed) — standard ladder only.")
 	}
 	if skippedCount > 0 {
 		noun := "members"
 		if skippedCount == 1 {
 			noun = "member"
 		}
-		b.WriteString(fmt.Sprintf("\n⚠️ %d %s skipped due to errors (reported)", skippedCount, noun))
+		footer.WriteString(fmt.Sprintf("\n⚠️ %d %s skipped due to errors (reported)", skippedCount, noun))
 	}
-	return b.String()
+	if b.Len()+footer.Len() > promoMessageLimit {
+		messages = append(messages, strings.TrimRight(b.String(), "\n"))
+		b.Reset()
+	}
+	if b.Len() == 0 {
+		b.WriteString(strings.TrimLeft(footer.String(), "\n"))
+	} else {
+		b.WriteString(footer.String())
+	}
+	return append(messages, strings.TrimRight(b.String(), "\n"))
 }
 
 // formatPromoLine renders one candidate. §VII-only candidates show the
@@ -293,10 +373,9 @@ type promoScan struct {
 }
 
 // collectPromoCandidates runs the full eligibility pass for a position scope:
-// roster fetch, rank-model fetch (degradable), concurrent per-member
-// evaluation, and the eligible-first sort. Errors are returned only for the
-// roster fetch; per-member failures are counted in SkippedCount and reported
-// to Sentry.
+// roster fetch, then the shared evaluatePromoRoster tail. Errors are returned
+// only for the roster fetch; per-member failures are counted in SkippedCount
+// and reported to Sentry.
 // promoActiveDutyScope is the special position value that sweeps the entire
 // Active Duty roster (ROSTER_TYPE_COMBAT) instead of a fuzzy position search.
 const promoActiveDutyScope = "active-duty"
@@ -318,8 +397,42 @@ func collectPromoCandidates(ctx context.Context, position string, asOf time.Time
 		return promoScan{EmptyRoster: true}, nil
 	}
 
-	// Rank model for the §VII path, fetched once per pass (after the
-	// empty-roster early return, so an empty scope costs no extra call). A
+	members := make([]utils.LiteProfileResponse, 0, len(roster.LiteProfiles))
+	for _, member := range roster.LiteProfiles {
+		members = append(members, member)
+	}
+	return evaluatePromoRoster(ctx, members, position, asOf), nil
+}
+
+// collectPromoCandidatesByRank runs the eligibility pass for every Active
+// Duty trooper currently holding rankShort (case-insensitive milpac short
+// form, e.g. "PFC").
+func collectPromoCandidatesByRank(ctx context.Context, rankShort string, asOf time.Time) (promoScan, error) {
+	roster, err := utils.GetLiteRoster(ctx, "ROSTER_TYPE_COMBAT")
+	if err != nil {
+		return promoScan{}, err
+	}
+
+	members := make([]utils.LiteProfileResponse, 0)
+	for _, member := range roster.LiteProfiles {
+		if strings.EqualFold(member.Rank.RankShort, rankShort) {
+			members = append(members, member)
+		}
+	}
+	utils.Info("📋 Retrieved roster", "member_count", len(members), "rank", rankShort)
+
+	if len(members) == 0 {
+		return promoScan{EmptyRoster: true}, nil
+	}
+	return evaluatePromoRoster(ctx, members, "rank:"+rankShort, asOf), nil
+}
+
+// evaluatePromoRoster is the scope-independent tail of an eligibility pass:
+// rank-model fetch (degradable), concurrent per-member evaluation, and the
+// seniority sort. scopeLabel is for error reporting only.
+func evaluatePromoRoster(ctx context.Context, members []utils.LiteProfileResponse, scopeLabel string, asOf time.Time) promoScan {
+	// Rank model for the §VII path, fetched once per pass (after the callers'
+	// empty-roster early returns, so an empty scope costs no extra call). A
 	// failure degrades to standard-ladder-only rather than failing the pass.
 	var rankModel *viiRankModel
 	if ranksResp, ranksErr := utils.GetRanks(ctx); ranksErr != nil {
@@ -328,10 +441,6 @@ func collectPromoCandidates(ctx context.Context, position string, asOf time.Time
 		rankModel = buildRankModel(ranksResp)
 	}
 
-	members := make([]utils.LiteProfileResponse, 0, len(roster.LiteProfiles))
-	for _, member := range roster.LiteProfiles {
-		members = append(members, member)
-	}
 	results := make([]*promoCandidate, len(members))
 	errs := make([]error, len(members))
 
@@ -349,7 +458,7 @@ func collectPromoCandidates(ctx context.Context, position string, asOf time.Time
 	scan := promoScan{ViiActive: rankModel != nil}
 	for idx, member := range members {
 		if err := errs[idx]; err != nil {
-			utils.CaptureError("Promo member evaluation failed", err, "username", member.User.Username, "position", position)
+			utils.CaptureError("Promo member evaluation failed", err, "username", member.User.Username, "position", scopeLabel)
 			scan.SkippedCount++
 			continue
 		}
@@ -358,14 +467,15 @@ func collectPromoCandidates(ctx context.Context, position string, asOf time.Time
 		}
 	}
 
-	// Eligible-now first, then alphabetical for stable output.
+	// Most-senior current rank first, then alphabetical for stable output.
 	sort.Slice(scan.Candidates, func(a, b int) bool {
-		if scan.Candidates[a].Verdict.Eligible != scan.Candidates[b].Verdict.Eligible {
-			return scan.Candidates[a].Verdict.Eligible
+		ra, rb := promoRankIndex(scan.Candidates[a].RankShort), promoRankIndex(scan.Candidates[b].RankShort)
+		if ra != rb {
+			return ra < rb
 		}
 		return scan.Candidates[a].Username < scan.Candidates[b].Username
 	})
-	return scan, nil
+	return scan
 }
 
 // ---------------------------------------------------------------------------

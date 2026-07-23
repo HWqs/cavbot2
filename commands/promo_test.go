@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -197,29 +198,103 @@ func TestRunPromoMemberFetchFailureSkipsAndReports(t *testing.T) {
 	}
 }
 
-func TestFormatPromoResponseTruncation(t *testing.T) {
-	candidates := make([]promoCandidate, promoMaxLines+5)
+// A long list must render EVERY candidate, split across messages that each
+// respect Discord's 2000-char cap — no truncation.
+func TestFormatPromoMessagesChunksLongLists(t *testing.T) {
+	candidates := make([]promoCandidate, 80)
 	for idx := range candidates {
 		candidates[idx] = promoCandidate{
-			Username:  "Member" + string(rune('A'+idx)),
+			Username:  fmt.Sprintf("Member.%03d", idx),
 			MilpacURL: "https://7cav.us/rosters/profile/1",
 			RankShort: "PVT",
 			Verdict:   promoEligibility{Eligible: true, NextRank: "PFC", Type: "automatic"},
 		}
 	}
-	out := formatPromoResponse("ACD", mustParseDate("2026-05-15"), candidates, 0, true)
-	if !strings.Contains(out, "and 5 more") {
-		t.Errorf("expected truncation notice, got %q", out)
+	messages := formatPromoMessages("ACD", mustParseDate("2026-05-15"), candidates, 1, false)
+	if len(messages) < 2 {
+		t.Fatalf("80 candidates should span multiple messages, got %d", len(messages))
 	}
-	if len(out) >= 2000 {
-		t.Errorf("output length %d exceeds Discord limit", len(out))
+	joined := strings.Join(messages, "\n")
+	for _, c := range candidates {
+		if !strings.Contains(joined, c.Username) {
+			t.Fatalf("candidate %s missing from output", c.Username)
+		}
+	}
+	if strings.Contains(joined, "more (narrow") {
+		t.Errorf("truncation notice must be gone: %q", joined)
+	}
+	for idx, m := range messages {
+		if len(m) >= 2000 {
+			t.Errorf("message %d length %d exceeds Discord limit", idx, len(m))
+		}
+	}
+	// Header on the first message only; footers on the last only.
+	if !strings.Contains(messages[0], "members eligible for promotion") {
+		t.Errorf("header missing from first message: %q", messages[0])
+	}
+	last := messages[len(messages)-1]
+	if !strings.Contains(last, "standard ladder only") || !strings.Contains(last, "1 member skipped") {
+		t.Errorf("footer notes missing from last message: %q", last)
+	}
+	for _, m := range messages[:len(messages)-1] {
+		if strings.Contains(m, "standard ladder only") || strings.Contains(m, "skipped") {
+			t.Errorf("footer notes must only render on the last message: %q", m)
+		}
 	}
 }
 
-func TestFormatPromoResponseNoCandidates(t *testing.T) {
-	out := formatPromoResponse("ACD", mustParseDate("2026-05-15"), nil, 0, true)
-	if !strings.Contains(out, "No ACD members eligible") {
-		t.Errorf("expected no-candidates message, got %q", out)
+// manyEligiblePVTs builds a roster and profile set of n eligible PVTs — long
+// enough scopes force multi-message output.
+func manyEligiblePVTs(n int) (utils.LiteRosterResponse, map[string]utils.ProfileResponse) {
+	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{}}
+	profiles := make(map[string]utils.ProfileResponse, n)
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("Member.%03d", i)
+		roster.LiteProfiles[name] = promoLiteProfile(name, "PVT", "101")
+		profiles[name] = promoFullProfile(name, "PVT", "2026-04-01", "2026-04-01", "Rifleman")
+	}
+	return roster, profiles
+}
+
+// A scope whose list exceeds one message must deliver the tail via follow-up
+// messages — every candidate reaches the channel.
+func TestRunPromoLongListSendsFollowups(t *testing.T) {
+	roster, profiles := manyEligiblePVTs(60)
+	servePromoAPIWithRanks(t, roster, profiles, viiTestRanks())
+
+	f := &fakeResponder{}
+	runPromo(f, promoInteraction("ACD", ""), afsmRefDate)
+
+	parts := []string{lastEditContent(f.Calls())}
+	for _, call := range f.Calls() {
+		if call.Method == "Followup" && call.Params != nil {
+			parts = append(parts, call.Params.Content)
+		}
+	}
+	if len(parts) < 2 {
+		t.Fatalf("60 candidates should need follow-up messages, calls: %d parts", len(parts))
+	}
+	joined := strings.Join(parts, "\n")
+	for i := 0; i < 60; i++ {
+		name := fmt.Sprintf("Member.%03d", i)
+		if !strings.Contains(joined, name) {
+			t.Fatalf("candidate %s missing from combined output", name)
+		}
+	}
+	for idx, p := range parts {
+		if len(p) >= 2000 {
+			t.Errorf("part %d length %d exceeds Discord limit", idx, len(p))
+		}
+	}
+}
+
+func TestFormatPromoMessagesNoCandidates(t *testing.T) {
+	messages := formatPromoMessages("ACD", mustParseDate("2026-05-15"), nil, 0, true)
+	if len(messages) != 1 {
+		t.Fatalf("expected a single message, got %d", len(messages))
+	}
+	if !strings.Contains(messages[0], "No ACD members eligible") {
+		t.Errorf("expected no-candidates message, got %q", messages[0])
 	}
 }
 
@@ -228,8 +303,8 @@ func TestPromoDefinition(t *testing.T) {
 	if cmd.Definition.Name != "promo" {
 		t.Errorf("command name = %q, want promo", cmd.Definition.Name)
 	}
-	if len(cmd.Definition.Options) != 4 {
-		t.Fatalf("options = %d, want 4 (position, user, as_of, export_csv)", len(cmd.Definition.Options))
+	if len(cmd.Definition.Options) != 5 {
+		t.Fatalf("options = %d, want 5 (position, user, rank, as_of, export_csv)", len(cmd.Definition.Options))
 	}
 	for _, opt := range cmd.Definition.Options {
 		if opt.Required {
@@ -296,7 +371,8 @@ func servePromoAPIWithRanks(
 		case strings.HasPrefix(r.URL.Path, "/milpacs/ranks"):
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(ranksBody)
-		case strings.HasPrefix(r.URL.Path, "/milpacs/position/search/"):
+		case strings.HasPrefix(r.URL.Path, "/milpacs/position/search/"),
+			strings.HasPrefix(r.URL.Path, "/roster/"):
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(rosterBody)
 		case strings.HasPrefix(r.URL.Path, "/milpacs/profile/username/"):
@@ -373,6 +449,122 @@ func TestRunPromoViiDegradationNotice(t *testing.T) {
 	}
 }
 
+// --- rank ordering -----------------------------------------------------------
+
+func TestPromoRankIndex(t *testing.T) {
+	// Most-senior-first: officer < warrant < enlisted; alphabetic ties broken
+	// elsewhere. Unknown ranks sort after every known one.
+	ordered := []string{"COL", "2LT", "CW5", "WO1", "CSM", "SGT", "PVT"}
+	for i := 1; i < len(ordered); i++ {
+		if promoRankIndex(ordered[i-1]) >= promoRankIndex(ordered[i]) {
+			t.Errorf("%s should sort before %s", ordered[i-1], ordered[i])
+		}
+	}
+	if promoRankIndex("pfc") != promoRankIndex("PFC") {
+		t.Error("rank index must be case-insensitive")
+	}
+	if promoRankIndex("XYZ") <= promoRankIndex("PVT") {
+		t.Error("unknown rank must sort after every known rank")
+	}
+}
+
+func TestPromoCandidatesSortedByRankThenName(t *testing.T) {
+	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": promoLiteProfile("Bravo.B", "PVT", "101"),
+		"2": promoLiteProfile("Alpha.A", "PVT", "102"),
+		"3": promoLiteProfile("Sarge.S", "SGT", "103"),
+		"4": promoLiteProfile("Fresh.F", "PFC", "104"),
+	}}
+	profiles := map[string]utils.ProfileResponse{
+		"Bravo.B": promoFullProfile("Bravo.B", "PVT", "2026-04-01", "2026-04-01", "Rifleman"),
+		"Alpha.A": promoFullProfile("Alpha.A", "PVT", "2026-04-01", "2026-04-01", "Rifleman"),
+		"Sarge.S": promoFullProfile("Sarge.S", "SGT", "2025-01-01", "2024-01-01", "Platoon Sergeant 1/1/A"),
+		"Fresh.F": promoFullProfile("Fresh.F", "PFC", "2026-01-01", "2026-01-01", "Rifleman"),
+	}
+	serveRosterAndProfiles(t, roster, 200, profiles)
+
+	f := &fakeResponder{}
+	runPromo(f, promoInteraction("ACD", ""), afsmRefDate)
+
+	content := lastEditContent(f.Calls())
+	iS, iF := strings.Index(content, "Sarge.S"), strings.Index(content, "Fresh.F")
+	iA, iB := strings.Index(content, "Alpha.A"), strings.Index(content, "Bravo.B")
+	for name, idx := range map[string]int{"Sarge.S": iS, "Fresh.F": iF, "Alpha.A": iA, "Bravo.B": iB} {
+		if idx < 0 {
+			t.Fatalf("%s missing from output: %q", name, content)
+		}
+	}
+	if iS >= iF || iF >= iA || iA >= iB {
+		t.Errorf("want SGT before PFC before PVTs (alphabetical), got order S=%d F=%d A=%d B=%d in %q", iS, iF, iA, iB, content)
+	}
+}
+
+// --- rank mode ---------------------------------------------------------------
+
+func promoRankInteraction(rank string) *discordgo.InteractionCreate {
+	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		Type: discordgo.InteractionApplicationCommand,
+		Data: discordgo.ApplicationCommandInteractionData{Name: "promo", Options: []*discordgo.ApplicationCommandInteractionDataOption{
+			{Name: "rank", Type: discordgo.ApplicationCommandOptionString, Value: rank},
+		}},
+		Member: &discordgo.Member{User: &discordgo.User{ID: "42", Username: "tester"}},
+	}}
+}
+
+func TestRunPromoRankMode(t *testing.T) {
+	// The active-duty roster carries a PVT (eligible), a PVT (not eligible),
+	// and an eligible PFC that the rank filter must exclude.
+	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": promoLiteProfile("Ready.R", "PVT", "101"),
+		"2": promoLiteProfile("Fresh.F", "PVT", "102"),
+		"3": promoLiteProfile("Other.O", "PFC", "103"),
+	}}
+	profiles := map[string]utils.ProfileResponse{
+		"Ready.R": promoFullProfile("Ready.R", "PVT", "2026-04-01", "2026-04-01", "Rifleman"),
+		"Fresh.F": promoFullProfile("Fresh.F", "PVT", "2026-05-10", "2026-05-10", "Rifleman"),
+		"Other.O": promoFullProfile("Other.O", "PFC", "2026-01-01", "2026-01-01", "Rifleman"),
+	}
+	servePromoAPIWithRanks(t, roster, profiles, viiTestRanks())
+
+	f := &fakeResponder{}
+	runPromo(f, promoRankInteraction("pvt"), afsmRefDate)
+
+	content := lastEditContent(f.Calls())
+	if !strings.Contains(content, "PVT members eligible") {
+		t.Errorf("header should carry the canonical rank scope: %q", content)
+	}
+	if !strings.Contains(content, "Ready.R") {
+		t.Errorf("eligible PVT missing: %q", content)
+	}
+	if strings.Contains(content, "Fresh.F") {
+		t.Errorf("ineligible PVT should not render: %q", content)
+	}
+	if strings.Contains(content, "Other.O") {
+		t.Errorf("PFC must be excluded by the rank filter: %q", content)
+	}
+}
+
+func TestRunPromoRankModeNoHolders(t *testing.T) {
+	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": promoLiteProfile("Ready.R", "PVT", "101"),
+	}}
+	servePromoAPIWithRanks(t, roster, nil, viiTestRanks())
+
+	f := &fakeResponder{}
+	runPromo(f, promoRankInteraction("XYZ"), afsmRefDate)
+
+	found := false
+	for _, call := range f.Calls() {
+		if call.Method == "Respond" && call.Response != nil && call.Response.Data != nil &&
+			strings.Contains(call.Response.Data.Content, "No active-duty troopers hold rank") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected no-holders message, calls: %+v", f.Calls())
+	}
+}
+
 // --- single-user mode --------------------------------------------------------
 
 func TestRunPromoUserModeVerdict(t *testing.T) {
@@ -437,7 +629,7 @@ func TestRunPromoUserModeUnknownUser(t *testing.T) {
 }
 
 func TestRunPromoModeValidation(t *testing.T) {
-	// Neither position nor user → validation error, no API calls.
+	// No mode option at all → validation error, no API calls.
 	f := &fakeResponder{}
 	runPromo(f, &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
 		Type:   discordgo.InteractionApplicationCommand,
@@ -452,6 +644,17 @@ func TestRunPromoModeValidation(t *testing.T) {
 	data := i.Data.(discordgo.ApplicationCommandInteractionData)
 	data.Options = append(data.Options, &discordgo.ApplicationCommandInteractionDataOption{
 		Name: "user", Type: discordgo.ApplicationCommandOptionString, Value: "Someone.S",
+	})
+	i.Data = data
+	runPromo(f, i, afsmRefDate)
+	assertPromoModeError(t, f)
+
+	// Position and rank together → same validation error.
+	f = &fakeResponder{}
+	i = promoInteraction("ACD", "")
+	data = i.Data.(discordgo.ApplicationCommandInteractionData)
+	data.Options = append(data.Options, &discordgo.ApplicationCommandInteractionDataOption{
+		Name: "rank", Type: discordgo.ApplicationCommandOptionString, Value: "PFC",
 	})
 	i.Data = data
 	runPromo(f, i, afsmRefDate)

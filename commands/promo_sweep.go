@@ -147,7 +147,7 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 			utils.CaptureError("Promotion sweep position pass failed", err, "position", position)
 			continue
 		}
-		var body string
+		var bodies []string
 		if scan.EmptyRoster {
 			// A configured (fixed-input) position returning empty is
 			// structurally a bug, not a user typo — Sentry per ADR 0002.
@@ -156,12 +156,15 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 				fmt.Errorf("empty roster for configured position %q", position),
 				"position", position,
 			)
-			body = fmt.Sprintf("⚠️ Promotion sweep: the %s roster came back empty — this shouldn't happen for a configured position. The issue has been reported.", position)
+			bodies = []string{fmt.Sprintf("⚠️ Promotion sweep: the %s roster came back empty — this shouldn't happen for a configured position. The issue has been reported.", position)}
 		} else {
-			body = "📋 **Weekly promotion sweep**\n" + formatPromoResponse(position, asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
+			bodies = formatPromoMessages(position, asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
+			bodies[0] = "📋 **Weekly promotion sweep**\n" + bodies[0]
 		}
-		if _, err := s.ChannelMessageSend(cfg.ChannelID, body); err != nil {
-			return fmt.Errorf("send sweep message for %s: %w", position, err)
+		for _, body := range bodies {
+			if _, err := s.ChannelMessageSend(cfg.ChannelID, body); err != nil {
+				return fmt.Errorf("send sweep message for %s: %w", position, err)
+			}
 		}
 		utils.Info("Promotion sweep posted", "position", position, "eligible", len(scan.Candidates))
 	}

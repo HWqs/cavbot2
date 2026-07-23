@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -126,6 +127,40 @@ func TestRunPromoSweepPostsPerPosition(t *testing.T) {
 	}
 	if !strings.Contains(sender.bodies[0], "Ready.R") {
 		t.Errorf("candidate missing from sweep body: %q", sender.bodies[0])
+	}
+}
+
+// A long candidate list splits across multiple channel messages — nothing is
+// truncated and every message stays under the Discord cap.
+func TestRunPromoSweepChunksLongLists(t *testing.T) {
+	roster, profiles := manyEligiblePVTs(60)
+	servePromoAPIWithRanks(t, roster, profiles, viiTestRanks())
+
+	sender := &fakeChannelSender{}
+	cfg := promoSweepConfig{ChannelID: "chan-1", Positions: []string{"ACD"}}
+	if err := runPromoSweep(sender, cfg, afsmRefDate); err != nil {
+		t.Fatalf("runPromoSweep: %v", err)
+	}
+	if len(sender.bodies) < 2 {
+		t.Fatalf("60 candidates should span multiple messages, got %d", len(sender.bodies))
+	}
+	joined := strings.Join(sender.bodies, "\n")
+	for i := 0; i < 60; i++ {
+		name := fmt.Sprintf("Member.%03d", i)
+		if !strings.Contains(joined, name) {
+			t.Fatalf("candidate %s missing from sweep output", name)
+		}
+	}
+	for idx, body := range sender.bodies {
+		if len(body) >= 2000 {
+			t.Errorf("message %d length %d exceeds Discord limit", idx, len(body))
+		}
+	}
+	if !strings.Contains(sender.bodies[0], "Weekly promotion sweep") {
+		t.Errorf("sweep header missing from first message: %q", sender.bodies[0])
+	}
+	if strings.Contains(sender.bodies[1], "Weekly promotion sweep") {
+		t.Errorf("sweep header must only render once: %q", sender.bodies[1])
 	}
 }
 
