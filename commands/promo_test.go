@@ -136,13 +136,13 @@ func TestRunPromoInvalidAsOfDate(t *testing.T) {
 }
 
 func TestRunPromoEmptyRoster(t *testing.T) {
+	// User-supplied position: empty roster is a message-only outcome routed
+	// through HandleError with the shared search-format hint (ADR 0002).
 	serveRosterAndProfiles(t, utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{}}, 200, nil)
 
 	f := &fakeResponder{}
 	runPromo(f, promoInteraction("XYZZY", ""), afsmRefDate)
 
-	// User-supplied position: empty roster is a message-only outcome routed
-	// through HandleError with the shared search-format hint (ADR 0002).
 	found := false
 	for _, call := range f.Calls() {
 		if call.Method == "Respond" && call.Response != nil && call.Response.Data != nil &&
@@ -228,11 +228,13 @@ func TestPromoDefinition(t *testing.T) {
 	if cmd.Definition.Name != "promo" {
 		t.Errorf("command name = %q, want promo", cmd.Definition.Name)
 	}
-	if len(cmd.Definition.Options) != 2 {
-		t.Fatalf("options = %d, want 2", len(cmd.Definition.Options))
+	if len(cmd.Definition.Options) != 4 {
+		t.Fatalf("options = %d, want 4 (position, user, as_of, export_csv)", len(cmd.Definition.Options))
 	}
-	if !cmd.Definition.Options[0].Required || cmd.Definition.Options[1].Required {
-		t.Error("position should be required, as_of optional")
+	for _, opt := range cmd.Definition.Options {
+		if opt.Required {
+			t.Errorf("option %q should be optional (mode validated at runtime)", opt.Name)
+		}
 	}
 	if cmd.Handler == nil {
 		t.Error("handler is nil")
@@ -368,5 +370,170 @@ func TestRunPromoViiDegradationNotice(t *testing.T) {
 	}
 	if !strings.Contains(content, "Ready.R") {
 		t.Errorf("standard path should still work: %q", content)
+	}
+}
+
+// --- single-user mode --------------------------------------------------------
+
+func TestRunPromoUserModeVerdict(t *testing.T) {
+	// Not-yet-eligible PVT: verdict must show the failing TIG gate and the
+	// countdown, and §VII inapplicability.
+	profiles := map[string]utils.ProfileResponse{
+		"Fresh.F": promoFullProfile("Fresh.F", "PVT", "2026-05-10", "2026-05-10", "Rifleman"),
+	}
+	servePromoAPIWithRanks(t, utils.LiteRosterResponse{}, profiles, viiTestRanks())
+
+	f := &fakeResponder{}
+	runPromo(f, promoUserInteraction("Fresh.F", ""), afsmRefDate)
+
+	content := lastEditContent(f.Calls())
+	if !strings.Contains(content, "not yet eligible for PFC") {
+		t.Errorf("verdict header wrong: %q", content)
+	}
+	if !strings.Contains(content, "❌ TIG") {
+		t.Errorf("failing TIG gate not shown: %q", content)
+	}
+	if !strings.Contains(content, "day(s) until time requirements met") {
+		t.Errorf("countdown missing: %q", content)
+	}
+	if !strings.Contains(content, "§VII): not applicable") {
+		t.Errorf("§VII verdict missing: %q", content)
+	}
+}
+
+func TestRunPromoUserModeViiVeteran(t *testing.T) {
+	vet := viiVetProfile()
+	profiles := map[string]utils.ProfileResponse{"Vet.V": *vet}
+	servePromoAPIWithRanks(t, utils.LiteRosterResponse{}, profiles, viiTestRanks())
+
+	f := &fakeResponder{}
+	runPromo(f, promoUserInteraction("Vet.V", ""), afsmRefDate)
+
+	content := lastEditContent(f.Calls())
+	if !strings.Contains(content, "eligible for SSG") {
+		t.Errorf("§VII eligibility missing: %q", content)
+	}
+	if !strings.Contains(content, "held 2021-01-01 as Section Leader") {
+		t.Errorf("held evidence missing: %q", content)
+	}
+}
+
+func TestRunPromoUserModeUnknownUser(t *testing.T) {
+	servePromoAPIWithRanks(t, utils.LiteRosterResponse{}, nil, viiTestRanks())
+
+	f := &fakeResponder{}
+	runPromo(f, promoUserInteraction("Nobody.N", ""), afsmRefDate)
+
+	found := false
+	for _, call := range f.Calls() {
+		if call.Method == "Respond" && call.Response != nil && call.Response.Data != nil &&
+			strings.Contains(call.Response.Data.Content, "No milpac found") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected not-found message, calls: %+v", f.Calls())
+	}
+}
+
+func TestRunPromoModeValidation(t *testing.T) {
+	// Neither position nor user → validation error, no API calls.
+	f := &fakeResponder{}
+	runPromo(f, &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		Type:   discordgo.InteractionApplicationCommand,
+		Data:   discordgo.ApplicationCommandInteractionData{Name: "promo"},
+		Member: &discordgo.Member{User: &discordgo.User{ID: "42", Username: "tester"}},
+	}}, afsmRefDate)
+	assertPromoModeError(t, f)
+
+	// Both position and user → same validation error.
+	f = &fakeResponder{}
+	i := promoInteraction("ACD", "")
+	data := i.Data.(discordgo.ApplicationCommandInteractionData)
+	data.Options = append(data.Options, &discordgo.ApplicationCommandInteractionDataOption{
+		Name: "user", Type: discordgo.ApplicationCommandOptionString, Value: "Someone.S",
+	})
+	i.Data = data
+	runPromo(f, i, afsmRefDate)
+	assertPromoModeError(t, f)
+}
+
+func assertPromoModeError(t *testing.T, f *fakeResponder) {
+	t.Helper()
+	for _, call := range f.Calls() {
+		if call.Method == "Respond" && call.Response != nil && call.Response.Data != nil &&
+			strings.Contains(call.Response.Data.Content, "exactly one of") {
+			return
+		}
+	}
+	t.Errorf("expected mode-validation error, calls: %+v", f.Calls())
+}
+
+func promoUserInteraction(username, asOf string) *discordgo.InteractionCreate {
+	opts := []*discordgo.ApplicationCommandInteractionDataOption{
+		{Name: "user", Type: discordgo.ApplicationCommandOptionString, Value: username},
+	}
+	if asOf != "" {
+		opts = append(opts, &discordgo.ApplicationCommandInteractionDataOption{
+			Name: "as_of", Type: discordgo.ApplicationCommandOptionString, Value: asOf,
+		})
+	}
+	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		Type:   discordgo.InteractionApplicationCommand,
+		Data:   discordgo.ApplicationCommandInteractionData{Name: "promo", Options: opts},
+		Member: &discordgo.Member{User: &discordgo.User{ID: "42", Username: "tester"}},
+	}}
+}
+
+// --- CSV export ---------------------------------------------------------------
+
+func TestRunPromoCSVExport(t *testing.T) {
+	vet := viiVetProfile()
+	vet.UniformUrl = "https://7cav.us/data/roster_uniforms/0/301.jpg"
+	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": promoLiteProfile("Ready.R", "PVT", "101"),
+		"2": {User: vet.User, Rank: vet.Rank, UniformUrl: vet.UniformUrl},
+	}}
+	profiles := map[string]utils.ProfileResponse{
+		"Ready.R": promoFullProfile("Ready.R", "PVT", "2026-04-01", "2026-04-01", "Rifleman"),
+		"Vet.V":   *vet,
+	}
+	servePromoAPIWithRanks(t, roster, profiles, viiTestRanks())
+
+	i := promoInteraction("ACD", "")
+	data := i.Data.(discordgo.ApplicationCommandInteractionData)
+	data.Options = append(data.Options, &discordgo.ApplicationCommandInteractionDataOption{
+		Name: "export_csv", Type: discordgo.ApplicationCommandOptionBoolean, Value: true,
+	})
+	i.Data = data
+
+	f := &fakeResponder{}
+	runPromo(f, i, afsmRefDate)
+
+	var edit *discordgo.WebhookEdit
+	for _, call := range f.Calls() {
+		if call.Method == "Edit" && call.Edit != nil {
+			edit = call.Edit
+		}
+	}
+	if edit == nil || len(edit.Files) != 1 {
+		t.Fatalf("expected one attached file, calls: %+v", f.Calls())
+	}
+	if !strings.HasSuffix(edit.Files[0].Name, ".csv") {
+		t.Errorf("file name = %q, want .csv", edit.Files[0].Name)
+	}
+	buf := new(strings.Builder)
+	if _, err := ioCopy(buf, edit.Files[0].Reader); err != nil {
+		t.Fatalf("read csv: %v", err)
+	}
+	csvBody := buf.String()
+	if !strings.Contains(csvBody, "username,current_rank,next_rank,path") {
+		t.Errorf("CSV header missing: %q", csvBody)
+	}
+	if !strings.Contains(csvBody, "Ready.R,PVT,PFC,standard") {
+		t.Errorf("standard candidate row missing: %q", csvBody)
+	}
+	if !strings.Contains(csvBody, "Vet.V,CPL,SGT,vii") || !strings.Contains(csvBody, "SSG,2021-01-01") {
+		t.Errorf("§VII candidate row missing: %q", csvBody)
 	}
 }

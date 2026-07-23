@@ -1,0 +1,294 @@
+package commands
+
+// Scheduled promotion sweep — the issue #4 "Notify" requirement. A weekly
+// background pass posts the promotion-eligible candidate list for the
+// configured position scopes to a configured channel, so S1 gets told
+// rather than having to remember to ask.
+//
+// Pattern mirrors the Star Citizen joiner-report scheduler
+// (star_citizen_joiners.go): sleep-until-fire loop, per-fire panic recovery
+// (a panic in one sweep must not kill the loop — see issue #119 rationale
+// there), a narrow session interface for testability, and a `now` seam.
+//
+// Configuration (env, all optional — defaults are live):
+//   PROMO_SWEEP_CHANNEL_ID — target channel (default: the S1 test channel)
+//   PROMO_SWEEP_POSITIONS  — comma-separated position scopes (default "ACD");
+//                            the special value "active-duty" sweeps the whole
+//                            Active Duty roster (ROSTER_TYPE_COMBAT)
+//   PROMO_SWEEP_DISABLED   — set to "true" to not start the loop
+//
+// Env-var parity reminder: these must be listed in BOTH .env.example and the
+// docker-compose environment: block, or they silently never reach the
+// container (see CLAUDE.md build/deploy quirks).
+//
+// The /promo_sweep_now command fires the same sweep immediately — the
+// test-guild smoke-test trigger, since waiting for a weekly tick is not a
+// smoke test.
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/7cav/cavbot2/utils"
+	"github.com/bwmarrin/discordgo"
+)
+
+const (
+	defaultPromoSweepChannelID = "1529633362275471531"
+	defaultPromoSweepPositions = "ACD"
+)
+
+// TODO(S1 follow-up): Monday 09:00 UTC is a placeholder cadence chosen by
+// engineering, not by the consumer. Before this leaves the test guild, ask
+// S1 when and how often they actually want the reminder (weekly vs
+// fortnightly vs monthly, day, and hour) and whether cadence should be
+// env-configurable rather than a compile-time constant. Update
+// PROMO_SWEEP_* docs in .env.example when decided.
+var promoSweepFireSchedule = mustWeeklyFireTime(time.Monday, 9, 0)
+
+// promoSweepSession is the Discord REST surface the sweep needs;
+// *discordgo.Session satisfies it.
+type promoSweepSession interface {
+	ChannelMessageSend(channelID string, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
+}
+
+type promoSweepConfig struct {
+	ChannelID string
+	Positions []string
+	Disabled  bool
+}
+
+// promoSweepConfigFromEnv reads sweep config with live defaults: an unset
+// environment still sweeps (per S1's request the feature is on by default);
+// PROMO_SWEEP_DISABLED=true is the off switch.
+func promoSweepConfigFromEnv() promoSweepConfig {
+	cfg := promoSweepConfig{
+		ChannelID: defaultPromoSweepChannelID,
+		Positions: strings.Split(defaultPromoSweepPositions, ","),
+		Disabled:  strings.EqualFold(os.Getenv("PROMO_SWEEP_DISABLED"), "true"),
+	}
+	if v := strings.TrimSpace(os.Getenv("PROMO_SWEEP_CHANNEL_ID")); v != "" {
+		cfg.ChannelID = v
+	}
+	if v := strings.TrimSpace(os.Getenv("PROMO_SWEEP_POSITIONS")); v != "" {
+		cfg.Positions = nil
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				cfg.Positions = append(cfg.Positions, p)
+			}
+		}
+	}
+	return cfg
+}
+
+// StartPromoSweepScheduler launches the weekly sweep goroutine. Called from
+// main after the gateway opens, alongside StartJoinerReportScheduler.
+func StartPromoSweepScheduler(s *discordgo.Session) {
+	cfg := promoSweepConfigFromEnv()
+	if cfg.Disabled {
+		utils.Info("Promotion sweep scheduler disabled (PROMO_SWEEP_DISABLED)")
+		return
+	}
+	utils.Info("Starting promotion sweep scheduler",
+		"cadence", "weekly Monday 09:00 UTC",
+		"channel_id", cfg.ChannelID,
+		"positions", strings.Join(cfg.Positions, ","))
+	go runPromoSweepSchedulerLoop(s, cfg, time.Now)
+}
+
+// runPromoSweepSchedulerLoop is the goroutine body; split out for the `now`
+// seam. Per-fire panic recovery keeps the loop alive across a bad sweep; no
+// in-cycle retry — next Monday is the retry.
+func runPromoSweepSchedulerLoop(s promoSweepSession, cfg promoSweepConfig, now func() time.Time) {
+	for {
+		fire := nextPromoSweepFire(now())
+		utils.Info("Promotion sweep scheduled", "next_fire_utc", fire.Format(time.RFC3339))
+		time.Sleep(time.Until(fire))
+		func() {
+			defer utils.RecoverPanic("promo-sweep")
+			// Anchor eligibility to the scheduled fire time, not wall clock
+			// at wakeup, for the same drift reason as the joiner report.
+			if err := runPromoSweep(s, cfg, fire); err != nil {
+				utils.CaptureError("Promotion sweep failed", err,
+					"channel_id", cfg.ChannelID, "fire_utc", fire.Format(time.RFC3339))
+			}
+		}()
+	}
+}
+
+// nextPromoSweepFire returns the next scheduled fire strictly after now
+// (strict-after avoids a double-fire at exact-boundary starts).
+func nextPromoSweepFire(now time.Time) time.Time {
+	n := now.UTC()
+	candidate := time.Date(n.Year(), n.Month(), n.Day(),
+		promoSweepFireSchedule.hour, promoSweepFireSchedule.minute, 0, 0, time.UTC)
+	daysUntilWeekday := (int(promoSweepFireSchedule.weekday) - int(candidate.Weekday()) + 7) % 7
+	candidate = candidate.AddDate(0, 0, daysUntilWeekday)
+	if !candidate.After(n) {
+		candidate = candidate.AddDate(0, 0, 7)
+	}
+	return candidate
+}
+
+// runPromoSweep executes one sweep: an eligibility pass per configured
+// position, one message per position. A failed position is reported and the
+// sweep continues to the next; the first send failure aborts (if the channel
+// is unreachable every subsequent send fails identically).
+func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	for _, position := range cfg.Positions {
+		scan, err := collectPromoCandidates(ctx, position, asOf)
+		if err != nil {
+			utils.CaptureError("Promotion sweep position pass failed", err, "position", position)
+			continue
+		}
+		var body string
+		if scan.EmptyRoster {
+			// A configured (fixed-input) position returning empty is
+			// structurally a bug, not a user typo — Sentry per ADR 0002.
+			utils.CaptureError(
+				"Promotion sweep roster lookup returned zero members",
+				fmt.Errorf("empty roster for configured position %q", position),
+				"position", position,
+			)
+			body = fmt.Sprintf("⚠️ Promotion sweep: the %s roster came back empty — this shouldn't happen for a configured position. The issue has been reported.", position)
+		} else {
+			body = "📋 **Weekly promotion sweep**\n" + formatPromoResponse(position, asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
+		}
+		if _, err := s.ChannelMessageSend(cfg.ChannelID, body); err != nil {
+			return fmt.Errorf("send sweep message for %s: %w", position, err)
+		}
+		utils.Info("Promotion sweep posted", "position", position, "eligible", len(scan.Candidates))
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Manual trigger
+// ---------------------------------------------------------------------------
+
+// promoSweepTriggerRole is the Discord role (by name) allowed to fire the
+// manual sweep. Name-based rather than ID-based so the same build works on
+// the test guild and production, which have different role IDs.
+//
+// DEPLOYMENT NOTE — server-side gating required: this in-code check is a
+// backstop, not the primary control. The bot's other restricted commands
+// (e.g. /awol) carry NO in-code authorization; their gating lives entirely
+// in Discord's server-side integration permissions (Server Settings →
+// Integrations → CavBot2 → per-command role/channel rules), configured by
+// server admins. /promo_sweep_now must be restricted the same way at rollout
+// — wherever /awol's restriction is configured, mirror it there for this
+// command. The code gate below then covers misconfiguration (it fails
+// closed), but should never be the only layer.
+//
+// TODO(S1 follow-up): confirm with S1 whether "S1 - Department" is the right
+// role and whether it should be env-configurable before production rollout.
+const promoSweepTriggerRole = "S1 - Department"
+
+// roleLister is the narrow Discord surface the role gate needs;
+// *discordgo.Session satisfies it (same seam style as GuildManager).
+type roleLister interface {
+	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
+}
+
+// memberHasRoleByName reports whether the interaction member holds the named
+// guild role. Fails closed: a role-list fetch error or a missing role denies.
+func memberHasRoleByName(rl roleLister, i *discordgo.InteractionCreate, roleName string) (bool, error) {
+	if i.Member == nil || i.GuildID == "" {
+		return false, nil // DM context: no roles, no access
+	}
+	roles, err := rl.GuildRoles(i.GuildID)
+	if err != nil {
+		return false, err
+	}
+	roleID := ""
+	for _, role := range roles {
+		if role.Name == roleName {
+			roleID = role.ID
+			break
+		}
+	}
+	if roleID == "" {
+		return false, nil
+	}
+	for _, held := range i.Member.Roles {
+		if held == roleID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// PromoSweepNow registers /promo_sweep_now: fires the sweep immediately with
+// the current config. Exists so the sweep can be smoke-tested on the test
+// guild without waiting for Monday; also useful when S1 wants an off-cycle
+// report. Response is ephemeral (management action, warden convention).
+// Gated to the S1 department role — an off-cycle post lands in S1's channel,
+// so only S1 gets the trigger.
+func PromoSweepNow() Command {
+	return Command{
+		Definition: &discordgo.ApplicationCommand{
+			Name:        "promo_sweep_now",
+			Description: "Run the weekly promotion sweep immediately (posts to the configured channel)",
+		},
+		Handler: handlePromoSweepNow,
+	}
+}
+
+func handlePromoSweepNow(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	runPromoSweepNow(utils.NewSessionResponder(s), s, s, i, time.Now().UTC())
+}
+
+// runPromoSweepNow is the testable core; sender is the channel-send surface
+// and rl the role-list surface (the live session for both in production).
+func runPromoSweepNow(r utils.InteractionResponder, sender promoSweepSession, rl roleLister, i *discordgo.InteractionCreate, nowUTC time.Time) {
+	username, discordID := interactionUsernameAndID(i)
+	utils.Info("🚀 Starting Promo Sweep (manual)", "command", "PromoSweepNow", "username", username, "discord_id", discordID)
+
+	allowed, err := memberHasRoleByName(rl, i, promoSweepTriggerRole)
+	if err != nil {
+		utils.CaptureError("❌ Role check failed", err, "command", "PromoSweepNow")
+		utils.HandleError(r, i, "❌ Could not verify your roles — try again in a moment.")
+		return
+	}
+	if !allowed {
+		utils.Info("🚫 Promo sweep trigger denied", "username", username, "discord_id", discordID, "required_role", promoSweepTriggerRole)
+		utils.HandleError(r, i, fmt.Sprintf("🚫 This command requires the %q role.", promoSweepTriggerRole))
+		return
+	}
+
+	cfg := promoSweepConfigFromEnv()
+	err = r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: fmt.Sprintf("Running promotion sweep for %s → <#%s>...", strings.Join(cfg.Positions, ", "), cfg.ChannelID),
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
+	})
+	if err != nil {
+		utils.CaptureError("❌ Interaction response failed", err)
+		utils.HandleError(r, i, fmt.Sprintf("❌ Failed to respond to interaction: %v", err))
+		return
+	}
+
+	if err := runPromoSweep(sender, cfg, nowUTC); err != nil {
+		utils.CaptureError("Manual promotion sweep failed", err)
+		msg := fmt.Sprintf("❌ Sweep failed: %v", err)
+		if editErr := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg}); editErr != nil {
+			captureDeferredEditFailure(i, "PromoSweepNow", editErr)
+		}
+		return
+	}
+
+	msg := fmt.Sprintf("✅ Sweep complete — report posted to <#%s>.", cfg.ChannelID)
+	if err := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg}); err != nil {
+		captureDeferredEditFailure(i, "PromoSweepNow", err)
+		return
+	}
+	utils.Info("✨ Done!", "command", "PromoSweepNow")
+}

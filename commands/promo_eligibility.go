@@ -1,8 +1,9 @@
 package commands
 
-// Promotion-eligibility engine, ported from the author's internal S1 promotion tooling
-// (private). Requirements are
-// transcribed from 7CAV-R-023 Rank Promotion and Reduction Guidelines.
+// Promotion-eligibility engine, ported from the author's internal S1
+// promotion tooling (private). Requirements are transcribed from 7CAV-R-023
+// Rank Promotion and Reduction Guidelines, which is the source of truth for
+// every threshold below.
 //
 // Scope note: this implements the STANDARD promotion ladder only. The
 // Veteran Rank Retention (Ch.4 §VII) alternative path from the source tool's
@@ -209,11 +210,13 @@ type promoEligibility struct {
 	CoursesMet     bool
 	BilletMet      bool
 	DetectedBillet string
-	TigDays        int
-	TisDays        int
-	TigRequired    int
-	TisRequired    int
-	MissingCourses []string
+	// RequiredBillets echoes the rank's billet gate for display; nil = none.
+	RequiredBillets []string
+	TigDays         int
+	TisDays         int
+	TigRequired     int
+	TisRequired     int
+	MissingCourses  []string
 	// Non-gating courses the trooper hasn't completed (display labels), e.g.
 	// ODS pending for an NCO ladder rank. Informational only.
 	PendingDisplayCourses []string
@@ -284,6 +287,7 @@ func calculatePromotionEligibility(
 		CoursesMet:            coursesMet,
 		BilletMet:             billetMet,
 		DetectedBillet:        detected,
+		RequiredBillets:       req.Billets,
 		TigDays:               tigDays,
 		TisDays:               tisDays,
 		TigRequired:           tigRequired,

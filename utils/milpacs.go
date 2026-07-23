@@ -172,6 +172,15 @@ func GetMilpacByDiscordID(ctx context.Context, discordID string) (*ProfileRespon
 		discordID)
 }
 
+// GetLiteRoster fetches a whole roster by RosterType enum name (e.g.
+// "ROSTER_TYPE_COMBAT" = Active Duty) with minimal per-profile data — same
+// response shape as the fuzzy position search.
+func GetLiteRoster(ctx context.Context, rosterType string) (*LiteRosterResponse, error) {
+	return makeAPIRequest[LiteRosterResponse](ctx,
+		fmt.Sprintf("roster/%s/lite", rosterType),
+		rosterType)
+}
+
 func GetRosterByFuzzyPositionSearch(ctx context.Context, position string) (*LiteRosterResponse, error) {
 	return makeAPIRequest[LiteRosterResponse](ctx,
 		fmt.Sprintf("milpacs/position/search/%s", position),

@@ -10,6 +10,7 @@ package commands
 
 import (
 	"context"
+	"encoding/csv"
 	"fmt"
 	"sort"
 	"strings"
@@ -40,18 +41,30 @@ func Promo() Command {
 	return Command{
 		Definition: &discordgo.ApplicationCommand{
 			Name:        "promo",
-			Description: "List troopers eligible for promotion (standard ladder) in a position scope",
+			Description: "Check promotion eligibility (standard ladder + §VII) for a position scope or one trooper",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
 					Type:        discordgo.ApplicationCommandOptionString,
 					Name:        "position",
-					Description: "Position/unit to check (fuzzy match, e.g. 'ACD', '1-7', 'S1')",
-					Required:    true,
+					Description: "Position/unit (fuzzy, e.g. 'ACD', '1-7', 'S1') or 'active-duty' for the whole roster",
+					Required:    false,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "user",
+					Description: "Check one trooper by forum username (full verdict breakdown)",
+					Required:    false,
 				},
 				{
 					Type:        discordgo.ApplicationCommandOptionString,
 					Name:        "as_of",
 					Description: "Check eligibility as of this date (YYYY-MM-DD, default today)",
+					Required:    false,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionBoolean,
+					Name:        "export_csv",
+					Description: "Attach the full candidate list as a CSV file (position mode)",
 					Required:    false,
 				},
 			},
@@ -69,12 +82,17 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 	username, discordID := interactionUsernameAndID(i)
 	utils.Info("🚀 Starting Promo Check", "command", "Promo", "username", username, "discord_id", discordID)
 
-	position := ""
+	position, user := "", ""
+	exportCSV := false
 	asOf := nowUTC
 	for _, opt := range i.ApplicationCommandData().Options {
 		switch opt.Name {
 		case "position":
 			position = opt.StringValue()
+		case "user":
+			user = opt.StringValue()
+		case "export_csv":
+			exportCSV = opt.BoolValue()
 		case "as_of":
 			parsed, err := time.Parse("2006-01-02", opt.StringValue())
 			if err != nil {
@@ -84,7 +102,18 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 			asOf = parsed
 		}
 	}
-	utils.Debug("🔍 Processing promo options", "position", position, "as_of", asOf.Format("2006-01-02"))
+	utils.Debug("🔍 Processing promo options", "position", position, "user", user, "as_of", asOf.Format("2006-01-02"))
+
+	// Exactly one of position / user selects the mode; Discord can't express
+	// mutually-exclusive options, so validate here.
+	if (position == "") == (user == "") {
+		utils.HandleError(r, i, "❌ Provide exactly one of `position` (scope check) or `user` (single-trooper verdict).")
+		return
+	}
+	if user != "" {
+		runPromoUser(r, i, user, asOf)
+		return
+	}
 
 	err := r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -103,77 +132,31 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowU
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	roster, err := utils.GetRosterByFuzzyPositionSearch(ctx, position)
+	res, err := collectPromoCandidates(ctx, position, asOf)
 	if err != nil {
 		utils.CaptureError("❌ Roster fetch failed", err)
 		utils.HandleError(r, i, fmt.Sprintf("❌ Failed to fetch roster: %v", err))
 		return
 	}
-	utils.Info("📋 Retrieved roster", "member_count", len(roster.LiteProfiles))
-
 	// Position is user-supplied, so an empty roster is a plausible user
 	// outcome — message only, no Sentry (ADR 0002).
-	if len(roster.LiteProfiles) == 0 {
+	if res.EmptyRoster {
 		utils.HandleError(r, i, emptyRosterSearchMessage(position))
 		return
 	}
 
-	// Rank model for the §VII path, fetched once per run (after the
-	// empty-roster early return, so an empty scope costs no extra call). A
-	// failure degrades to standard-ladder-only rather than failing the
-	// command.
-	var rankModel *viiRankModel
-	if ranksResp, ranksErr := utils.GetRanks(ctx); ranksErr != nil {
-		utils.CaptureError("Ranks fetch failed; §VII path disabled for this run", ranksErr)
-	} else {
-		rankModel = buildRankModel(ranksResp)
+	if exportCSV {
+		sendPromoCSV(r, i, position, asOf, res)
+		utils.Info("✨ Done!", "command", "Promo", "position", position, "eligible", len(res.Candidates), "output", "csv")
+		return
 	}
 
-	members := make([]utils.LiteProfileResponse, 0, len(roster.LiteProfiles))
-	for _, member := range roster.LiteProfiles {
-		members = append(members, member)
-	}
-	results := make([]*promoCandidate, len(members))
-	errs := make([]error, len(members))
-
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(10)
-	for idx, member := range members {
-		idx, member := idx, member
-		g.Go(func() error {
-			results[idx], errs[idx] = evaluatePromoMember(gctx, member, asOf, rankModel)
-			return nil
-		})
-	}
-	_ = g.Wait()
-
-	candidates := []promoCandidate{}
-	skippedCount := 0
-	for idx, member := range members {
-		if err := errs[idx]; err != nil {
-			utils.CaptureError("Promo member evaluation failed", err, "username", member.User.Username, "position", position)
-			skippedCount++
-			continue
-		}
-		if results[idx] != nil {
-			candidates = append(candidates, *results[idx])
-		}
-	}
-
-	// Soonest-eligible-first; already-eligible sort to the top (0 days).
-	sort.Slice(candidates, func(a, b int) bool {
-		if candidates[a].Verdict.Eligible != candidates[b].Verdict.Eligible {
-			return candidates[a].Verdict.Eligible
-		}
-		return candidates[a].Username < candidates[b].Username
-	})
-
-	response := formatPromoResponse(position, asOf, candidates, skippedCount, rankModel != nil)
+	response := formatPromoResponse(position, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
 	if err := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response}); err != nil {
 		captureDeferredEditFailure(i, "Promo", err)
 		return
 	}
-	utils.Info("✨ Done!", "command", "Promo", "position", position, "eligible", len(candidates))
+	utils.Info("✨ Done!", "command", "Promo", "position", position, "eligible", len(res.Candidates))
 }
 
 // evaluatePromoMember returns (candidate, nil) when the trooper is eligible
@@ -297,4 +280,300 @@ func formatPromoLine(c promoCandidate) string {
 		line += ", also §VII → " + c.Vii.Target.Short
 	}
 	return line + ")\n"
+}
+
+// promoScan is the result of one position-scope eligibility pass.
+type promoScan struct {
+	Candidates   []promoCandidate
+	SkippedCount int
+	// ViiActive is false when the ranks fetch failed and the pass degraded
+	// to standard-ladder-only.
+	ViiActive   bool
+	EmptyRoster bool
+}
+
+// collectPromoCandidates runs the full eligibility pass for a position scope:
+// roster fetch, rank-model fetch (degradable), concurrent per-member
+// evaluation, and the eligible-first sort. Errors are returned only for the
+// roster fetch; per-member failures are counted in SkippedCount and reported
+// to Sentry.
+// promoActiveDutyScope is the special position value that sweeps the entire
+// Active Duty roster (ROSTER_TYPE_COMBAT) instead of a fuzzy position search.
+const promoActiveDutyScope = "active-duty"
+
+func collectPromoCandidates(ctx context.Context, position string, asOf time.Time) (promoScan, error) {
+	var roster *utils.LiteRosterResponse
+	var err error
+	if strings.EqualFold(position, promoActiveDutyScope) {
+		roster, err = utils.GetLiteRoster(ctx, "ROSTER_TYPE_COMBAT")
+	} else {
+		roster, err = utils.GetRosterByFuzzyPositionSearch(ctx, position)
+	}
+	if err != nil {
+		return promoScan{}, err
+	}
+	utils.Info("📋 Retrieved roster", "member_count", len(roster.LiteProfiles), "position", position)
+
+	if len(roster.LiteProfiles) == 0 {
+		return promoScan{EmptyRoster: true}, nil
+	}
+
+	// Rank model for the §VII path, fetched once per pass (after the
+	// empty-roster early return, so an empty scope costs no extra call). A
+	// failure degrades to standard-ladder-only rather than failing the pass.
+	var rankModel *viiRankModel
+	if ranksResp, ranksErr := utils.GetRanks(ctx); ranksErr != nil {
+		utils.CaptureError("Ranks fetch failed; §VII path disabled for this pass", ranksErr)
+	} else {
+		rankModel = buildRankModel(ranksResp)
+	}
+
+	members := make([]utils.LiteProfileResponse, 0, len(roster.LiteProfiles))
+	for _, member := range roster.LiteProfiles {
+		members = append(members, member)
+	}
+	results := make([]*promoCandidate, len(members))
+	errs := make([]error, len(members))
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(10)
+	for idx, member := range members {
+		idx, member := idx, member
+		g.Go(func() error {
+			results[idx], errs[idx] = evaluatePromoMember(gctx, member, asOf, rankModel)
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	scan := promoScan{ViiActive: rankModel != nil}
+	for idx, member := range members {
+		if err := errs[idx]; err != nil {
+			utils.CaptureError("Promo member evaluation failed", err, "username", member.User.Username, "position", position)
+			scan.SkippedCount++
+			continue
+		}
+		if results[idx] != nil {
+			scan.Candidates = append(scan.Candidates, *results[idx])
+		}
+	}
+
+	// Eligible-now first, then alphabetical for stable output.
+	sort.Slice(scan.Candidates, func(a, b int) bool {
+		if scan.Candidates[a].Verdict.Eligible != scan.Candidates[b].Verdict.Eligible {
+			return scan.Candidates[a].Verdict.Eligible
+		}
+		return scan.Candidates[a].Username < scan.Candidates[b].Username
+	})
+	return scan, nil
+}
+
+// ---------------------------------------------------------------------------
+// Single-trooper mode
+// ---------------------------------------------------------------------------
+
+// runPromoUser handles /promo user:<name> — the full verdict breakdown for
+// one trooper (the issue #4 "auto-validate a promotion" optional), mirroring
+// the source tool's single-member view.
+func runPromoUser(r utils.InteractionResponder, i *discordgo.InteractionCreate, username string, asOf time.Time) {
+	err := r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: fmt.Sprintf("Checking promotion eligibility for %s as of %s...", username, asOf.Format("2006-01-02")),
+		},
+	})
+	if err != nil {
+		utils.CaptureError("❌ Interaction response failed", err)
+		utils.HandleError(r, i, fmt.Sprintf("❌ Failed to respond to interaction: %v", err))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	profile, err := utils.GetMilpacByUsername(ctx, username)
+	if err != nil {
+		// Username is user-supplied: not-found is a plausible outcome.
+		utils.HandleError(r, i, fmt.Sprintf("❌ No milpac found for %q — use the forum username exactly as it appears on the roster.", username))
+		return
+	}
+
+	var vii *viiResult
+	viiActive := false
+	if ranksResp, ranksErr := utils.GetRanks(ctx); ranksErr != nil {
+		utils.CaptureError("Ranks fetch failed; §VII path disabled for this pass", ranksErr)
+	} else {
+		v := viiAnalyze(profile, buildRankModel(ranksResp), asOf)
+		vii = &v
+		viiActive = true
+	}
+
+	verdict := calculatePromotionEligibility(
+		profile.Rank.RankShort,
+		profile.PromotionDate,
+		profile.JoinDate,
+		parseCourseCompletions(profile.Records),
+		profile.Primary.PositionTitle,
+		asOf,
+	)
+
+	response := formatPromoUserVerdict(profile, verdict, vii, viiActive, asOf)
+	if err := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response}); err != nil {
+		captureDeferredEditFailure(i, "Promo", err)
+		return
+	}
+	utils.Info("✨ Done!", "command", "Promo", "user", username, "eligible", verdict.Eligible || (vii != nil && vii.EligibleNow))
+}
+
+func checkmark(ok bool) string {
+	if ok {
+		return "✅"
+	}
+	return "❌"
+}
+
+// formatPromoUserVerdict renders the single-trooper breakdown: every standard
+// gate with its status, then the §VII verdict with evidence or reasons.
+func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, vii *viiResult, viiActive bool, asOf time.Time) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**Promotion verdict for %s (%s) as of %s**\n",
+		profile.User.Username, profile.Rank.RankShort, asOf.Format("2006-01-02"))
+
+	if v.NoRequirements {
+		b.WriteString("Standard ladder: no promotion ladder defined for this rank.\n")
+	} else {
+		status := "not yet eligible"
+		if v.Eligible {
+			status = "eligible"
+		}
+		fmt.Fprintf(&b, "Standard ladder: **%s for %s** (%s)\n", status, v.NextRank, v.Type)
+		fmt.Fprintf(&b, "%s TIG %s (need %s)\n", checkmark(v.TigMet), formatDays(v.TigDays), formatDays(v.TigRequired))
+		if v.TisRequired > 0 {
+			fmt.Fprintf(&b, "%s TIS %s (need %s)\n", checkmark(v.TisMet), formatDays(v.TisDays), formatDays(v.TisRequired))
+		}
+		if len(v.MissingCourses) > 0 {
+			labels := make([]string, 0, len(v.MissingCourses))
+			for _, c := range v.MissingCourses {
+				labels = append(labels, courseLabels[c])
+			}
+			fmt.Fprintf(&b, "❌ Courses missing: %s\n", strings.Join(labels, ", "))
+		} else if len(v.PendingDisplayCourses) > 0 {
+			fmt.Fprintf(&b, "ℹ️ Pending (non-blocking): %s\n", strings.Join(v.PendingDisplayCourses, ", "))
+		}
+		if len(v.RequiredBillets) > 0 {
+			detected := v.DetectedBillet
+			if detected == "" {
+				detected = "none detected"
+			}
+			fmt.Fprintf(&b, "%s Billet: %s (needs %s)\n", checkmark(v.BilletMet), detected, strings.Join(v.RequiredBillets, "/"))
+		}
+		if !v.Eligible && v.DaysUntilEligible > 0 {
+			fmt.Fprintf(&b, "⏳ ~%d day(s) until time requirements met.\n", v.DaysUntilEligible)
+		}
+	}
+
+	switch {
+	case !viiActive:
+		b.WriteString("\nℹ️ Veteran Rank Retention (§VII) check unavailable this run (rank data fetch failed).")
+	case vii.EligibleNow:
+		fmt.Fprintf(&b, "\nVeteran Rank Retention (§VII): **eligible for %s**", vii.Target.Short)
+		if vii.TargetHeldDate != "" {
+			fmt.Fprintf(&b, " — held %s", vii.TargetHeldDate)
+			if vii.TargetHeldRole != "" {
+				fmt.Fprintf(&b, " as %s", vii.TargetHeldRole)
+			}
+		}
+		b.WriteString(".")
+	case vii.PotentiallyEligible:
+		target := ""
+		if vii.PotentialRank != nil {
+			target = " for " + vii.PotentialRank.Short
+		}
+		fmt.Fprintf(&b, "\nVeteran Rank Retention (§VII): potentially eligible%s.\n%s", target, vii.Reason())
+	default:
+		b.WriteString("\nVeteran Rank Retention (§VII): not applicable.")
+	}
+
+	b.WriteString("\n\n⚠️ Parsed from milpac data — verify before acting. Discretionary promotions still require S1 review.")
+	return b.String()
+}
+
+// formatDays renders a day count like the source tool ("3m 15d", "1y 2m").
+func formatDays(days int) string {
+	if days < 0 {
+		return "unknown"
+	}
+	if days < 30 {
+		return fmt.Sprintf("%dd", days)
+	}
+	months := days / 30
+	if months < 12 {
+		return fmt.Sprintf("%dm %dd", months, days%30)
+	}
+	return fmt.Sprintf("%dy %dm", months/12, months%12)
+}
+
+// ---------------------------------------------------------------------------
+// CSV export
+// ---------------------------------------------------------------------------
+
+// sendPromoCSV attaches the full candidate list as a CSV file, following the
+// /awol force_file_output pattern (issue #4 export optional). CSV escapes are
+// handled by encoding/csv; the writer targets a strings.Builder so no error
+// path exists in practice, but Flush errors are still surfaced.
+func sendPromoCSV(r utils.InteractionResponder, i *discordgo.InteractionCreate, position string, asOf time.Time, scan promoScan) {
+	var sb strings.Builder
+	w := csv.NewWriter(&sb)
+	_ = w.Write([]string{
+		"username", "current_rank", "next_rank", "path", "type",
+		"tig_days", "tig_required", "tis_days", "tis_required",
+		"pending_courses", "vii_target", "vii_held_date", "vii_held_role", "milpac_url",
+	})
+	for _, c := range scan.Candidates {
+		path := "standard"
+		viiTarget, viiHeldDate, viiHeldRole := "", "", ""
+		if c.ViaVII {
+			if c.Verdict.Eligible {
+				path = "standard+vii"
+			} else {
+				path = "vii"
+			}
+			viiTarget = c.Vii.Target.Short
+			viiHeldDate = c.Vii.TargetHeldDate
+			viiHeldRole = c.Vii.TargetHeldRole
+		}
+		_ = w.Write([]string{
+			c.Username, c.RankShort, c.Verdict.NextRank, path, c.Verdict.Type,
+			fmt.Sprintf("%d", c.Verdict.TigDays), fmt.Sprintf("%d", c.Verdict.TigRequired),
+			fmt.Sprintf("%d", c.Verdict.TisDays), fmt.Sprintf("%d", c.Verdict.TisRequired),
+			strings.Join(c.Verdict.PendingDisplayCourses, ";"),
+			viiTarget, viiHeldDate, viiHeldRole, c.MilpacURL,
+		})
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		utils.CaptureError("Promo CSV write failed", err)
+		utils.HandleError(r, i, fmt.Sprintf("❌ Failed to build CSV: %v", err))
+		return
+	}
+
+	file := &discordgo.File{
+		Name:        fmt.Sprintf("promo_report_%s_%s.csv", strings.ReplaceAll(position, "/", "-"), asOf.Format("2006-01-02")),
+		ContentType: "text/csv",
+		Reader:      strings.NewReader(sb.String()),
+	}
+	content := fmt.Sprintf("Promotion eligibility report for %s as of %s — %d candidate(s).",
+		position, asOf.Format("2006-01-02"), len(scan.Candidates))
+	if scan.SkippedCount > 0 {
+		content += fmt.Sprintf(" ⚠️ %d skipped due to errors (reported).", scan.SkippedCount)
+	}
+	if !scan.ViiActive {
+		content += " ℹ️ §VII check unavailable this run — standard ladder only."
+	}
+	if err := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: &content,
+		Files:   []*discordgo.File{file},
+	}); err != nil {
+		captureDeferredEditFailure(i, "Promo", err)
+	}
 }
