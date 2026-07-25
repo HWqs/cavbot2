@@ -21,7 +21,6 @@ func NewRegistry() *Registry {
 		GamertagSearch(),
 		S3AAR(),
 		Promo(),
-		PromoSweepNow(),
 		BilletAudit(),
 	)
 	return r
