@@ -46,9 +46,25 @@ const (
 	viiTotalDays  = 1095 // or 3y total
 )
 
-// billetCeiling is the authorised rank ceiling for a billet, per the wiki
-// Rank Promotion & Reduction Guidelines tables (line, staff/department,
-// officer). Empty string = no ceiling defined for that track.
+// billetCeiling is the authorised maximum rank for a billet, transcribed
+// from the "Billet Minimum / Maximum Rank Tables" (Ch.4 §II) and "Department
+// Staff" (Ch.4 §III) tables of 7CAV-R-023:
+// https://wiki.7cav.us/wiki/Rank_Promotion_and_Reduction_Guidelines
+// Verified against revision 17274 (last modified 24OCT24). An empty string
+// means R-023 defines no ceiling for that track, which is different from a
+// ceiling of zero: the §VII engine treats it as "cannot rate anyone here".
+//
+// Only Enlisted and Officer are read. Warrant is carried because R-023 states
+// the maxima as pairs ("SGT / CW2", "SSG / CW3") and dropping half the table
+// would make it harder to check against the source, but the engine never
+// consults it: viiW2E normalises a warrant rank to its NCO equivalent before
+// any comparison, so a warrant officer is measured against the Enlisted
+// ceiling. Correcting a Warrant value therefore changes nothing — the
+// behaviour lives in viiW2E and the Enlisted column.
+//
+// Minimum ranks are deliberately not modelled. R-023 gives them, but they
+// govern whether someone may be *assigned* a billet, which is S1's business
+// at assignment time, not whether an already-assigned member is promotable.
 type billetCeiling struct {
 	Enlisted string
 	Warrant  string
@@ -70,7 +86,9 @@ var viiBilletCeiling = map[string]billetCeiling{
 	"DEVCOM_LEAD":    {Enlisted: "MSG", Officer: "CPT"},
 	"DEPT2IC":        {Enlisted: "SFC", Warrant: "CW4", Officer: "CPT"},
 	"DEPT1IC":        {Enlisted: "MSG", Warrant: "CW5", Officer: "MAJ"},
-	"REGT_AIDE":      {Enlisted: "MSG", Warrant: "CW5", Officer: "LTC"},
+	// R-023 lists Regimental Aide as MSG/LTC with no warrant grade; the
+	// unread Warrant column is left empty here to match the source exactly.
+	"REGT_AIDE": {Enlisted: "MSG", Officer: "LTC"},
 	// officer command
 	"PL":    {Officer: "1LT"},
 	"CO_XO": {Officer: "MAJ"},
@@ -370,13 +388,13 @@ func canonicalBillet(role string) string {
 // ---------------------------------------------------------------------------
 
 var (
-	viiRetiredRe    = regexp.MustCompile(`(?i)Retired from the .*?(?:Cavalry|Calvary)`)
-	viiDowngradeRe  = regexp.MustCompile(`(?i)Retirement (?:status )?downgraded`)
-	viiInLieuRe     = regexp.MustCompile(`(?i)in Lieu of Retirement`)
+	viiRetiredRe   = regexp.MustCompile(`(?i)Retired from the .*?(?:Cavalry|Calvary)`)
+	viiDowngradeRe = regexp.MustCompile(`(?i)Retirement (?:status )?downgraded`)
+	viiInLieuRe    = regexp.MustCompile(`(?i)in Lieu of Retirement`)
 	// viiMemorialRe matches death/memorial departures (RIP, Arlington, Wall of
 	// Honor). Like retirement and discharge, these drop all billets and end
 	// service. Shared with /billetaudit.
-	viiMemorialRe = regexp.MustCompile(`(?i)Wall of Honor|Arlington|Rest in Peace|\bRIP\b|Killed in Action|\bKIA\b|In Memoriam|passed away`)
+	viiMemorialRe   = regexp.MustCompile(`(?i)Wall of Honor|Arlington|Rest in Peace|\bRIP\b|Killed in Action|\bKIA\b|In Memoriam|passed away`)
 	viiEnlistRe     = regexp.MustCompile(`(?i)Enlisted in the .*?(?:Cavalry|Calvary)`)
 	viiReinstateRe  = regexp.MustCompile(`(?i)Reinstated`)
 	viiDischargeRe  = regexp.MustCompile(`(?i)Discharge`)
