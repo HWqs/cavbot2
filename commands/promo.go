@@ -119,6 +119,12 @@ func promoRankIndex(rankShort string) int {
 	return len(promoRankOrder)
 }
 
+// promoNextRankIndex is the seniority sort key for a "next rank" cell, taking
+// the first rank of a compound target (SPC's "CPL/WO1" sorts as CPL).
+func promoNextRankIndex(nextRank string) int {
+	return promoRankIndex(strings.SplitN(nextRank, "/", 2)[0])
+}
+
 // promoDate renders dates in the org's DDMMMYY style (e.g. 23JUL26).
 func promoDate(t time.Time) string {
 	return strings.ToUpper(t.Format("02Jan06"))
@@ -1004,13 +1010,14 @@ func promoReportFile(scope string, filter promoFilter, asOf time.Time, scan prom
 			}
 		}
 		// data-sort carries the raw sort key so a column sorts by meaning, not
-		// display text: Rank by seniority (lower index = more senior), TIG/TIS
-		// by day count rather than the "3m 15d" string.
-		fmt.Fprintf(&b, "<tr><td><a href=\"%s\">%s</a></td><td data-sort=\"%d\">%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"+
+		// display text: Rank and Next by seniority (lower index = more senior),
+		// TIG/TIS by day count rather than the "3m 15d" string.
+		fmt.Fprintf(&b, "<tr><td><a href=\"%s\">%s</a></td><td data-sort=\"%d\">%s</td><td>%s</td><td data-sort=\"%d\">%s</td><td>%s</td><td>%s</td>"+
 			"<td data-sort=\"%d\">%s</td><td data-sort=\"%d\">%s</td><td>%s</td><td>%s</td><td>%s</td></tr>\n",
 			html.EscapeString(c.MilpacURL), html.EscapeString(c.Username),
 			promoRankIndex(c.RankShort), html.EscapeString(c.RankShort),
-			html.EscapeString(c.Primary), html.EscapeString(c.Verdict.NextRank),
+			html.EscapeString(c.Primary),
+			promoNextRankIndex(c.Verdict.NextRank), html.EscapeString(c.Verdict.NextRank),
 			html.EscapeString(strings.Join(promoCandidatePaths(c), ", ")),
 			html.EscapeString(strings.Join(promoCandidateTypes(c), " & ")),
 			c.Verdict.TigDays, formatDays(c.Verdict.TigDays),

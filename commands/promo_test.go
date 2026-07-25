@@ -552,6 +552,17 @@ func TestPromoRankIndex(t *testing.T) {
 	}
 }
 
+// The HTML "Next" column sorts by seniority; a compound target (SPC's
+// "CPL/WO1") sorts as its first rank.
+func TestPromoNextRankIndex(t *testing.T) {
+	if promoNextRankIndex("CPL/WO1") != promoRankIndex("CPL") {
+		t.Error("compound next rank should sort as its first rank")
+	}
+	if promoNextRankIndex("BG") >= promoNextRankIndex("SGT") {
+		t.Error("BG (senior) should sort before SGT")
+	}
+}
+
 func TestPromoCandidatesSortedByRankThenName(t *testing.T) {
 	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
 		"1": promoLiteProfile("Bravo.B", "PVT", "101"),
