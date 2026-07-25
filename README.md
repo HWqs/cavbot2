@@ -7,14 +7,105 @@ A Discord bot built for the 7th Cavalry Gaming Regiment using Go and DiscordGo, 
 
 ## Prerequisites
 
-- Go 1.23 or higher
-- DiscordGo library
-- A working Go development environment
+- Go 1.25.0 or higher (see `go` directive in `go.mod`)
+- [golangci-lint](https://golangci-lint.run/) 2.5.0+, built with Go 1.25 or newer
+- A C compiler (gcc) if you want to run the tests with `-race`
+
+## Commands
+
+| Command | Purpose |
+|---------|---------|
+| `/milpac` | Return a user's milpac |
+| `/zulu` | Current Zulu time |
+| `/gamertag_search` | Find a user by gamertag |
+| `/awol` | AWOL troopers for a position |
+| `/loa` | Active and upcoming LOAs for a position |
+| `/afsm` | Members eligible for the AFSM in a department |
+| `/s3aar` | Attendance list for events and operations |
+| `/s6-it-check` | S6 IT members eligible for full status |
+| `/warden` | Warden role management |
+| `/warden-bulkadd-internal` | Add a validated unit roster to Verified Warden Internal |
+| `/apps_beta_deploy` | Deploy the Apps beta version |
 
 ## Setup
 
-Under Construction due to rewrite of bot
-TODO: Add setup steps and list out functionality
+### 1. Discord application
+
+At <https://discord.com/developers/applications>:
+
+1. **New Application**, then open the **Bot** tab.
+2. **Reset Token** and copy it — this is `DISCORD_TOKEN`. It is only shown once.
+3. On the same tab, enable the **Server Members Intent** under Privileged Gateway
+   Intents. The bot requests `IntentsGuildMembers`; without this the gateway
+   connection fails at startup.
+4. Under **OAuth2 → URL Generator**, select the `bot` and `applications.commands`
+   scopes plus the View Channels, Send Messages, Attach Files and Embed Links
+   permissions, then open the generated URL to invite the bot.
+
+`applications.commands` is what allows slash commands to register.
+
+### 2. IDs
+
+Enable **Developer Mode** in the Discord client (User Settings → Advanced), then
+right-click a server or channel and choose Copy ID.
+
+Commands register per guild, so `GUILD_ID` must be the server you are testing in.
+Guild commands appear immediately.
+
+### 3. Environment
+
+Copy `.env.example` to `.env` and fill it in.
+
+**Startup fails without these:**
+
+| Variable | Source |
+|----------|--------|
+| `DISCORD_TOKEN` | Developer Portal → Bot → Reset Token |
+| `GUILD_ID` | Right-click the server → Copy Server ID |
+| `BM_TOKEN` | [BattleMetrics](https://www.battlemetrics.com) → Account → Developers. Only `/s3aar` uses it; any non-empty placeholder works otherwise. |
+
+**Not checked at startup, but required in practice:**
+
+| Variable | Source |
+|----------|--------|
+| `BEARER` | API token for `api.7cav.us`. Every milpac lookup fails without it, and there is no startup error — check this first when lookups fail. |
+
+**Optional:**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `LOG_LEVEL` | `default` | Set to `DEBUG` for local work |
+| `FORUM_DB_DSN` | unset | XenForo read-only DSN for the LOA cache. Unset logs a warning and disables LOA. |
+| `LOA_NODE_IDS` | unset | Forum node IDs the LOA cache reads |
+| `SENTRY_DSN` | unset | Error reporting; leave empty locally |
+| `APP_ENV` | `development` | Environment name |
+| `GITHUB_APP_KEY`, `GITHUB_APP_CLIENT_ID` | unset | `/apps_beta_deploy` only |
+
+When adding a new variable, add it to **both** `.env.example` and the
+`environment:` block in `docker-compose.yml`. Compose does not pass through
+variables that are not listed, so skipping the second step means the value never
+reaches the container.
+
+### 4. Run
+
+```bash
+go build -o cavbot2 .
+go run .
+```
+
+A healthy startup logs `Registering commands`, then
+`Bot is now running. Press CTRL-C to exit`.
+
+### Troubleshooting
+
+| Symptom | Likely cause |
+|---------|--------------|
+| Panic naming `DISCORD_TOKEN`, `GUILD_ID` or `BM_TOKEN` | Variable missing from `.env` |
+| Gateway connection fails | Server Members Intent not enabled |
+| Commands never appear | Bot invited without `applications.commands`, or `GUILD_ID` is not the server you are in |
+| Every milpac lookup fails | `BEARER` missing or expired |
+| `FORUM_DB_DSN not set` warning | Expected without a forum database; only affects LOA |
+| golangci-lint reports a Go version mismatch | Binary was built with an older Go than `go.mod` targets; reinstall 2.5.0+ |
 
 ## Testing
 
