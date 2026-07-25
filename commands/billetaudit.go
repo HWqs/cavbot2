@@ -18,7 +18,6 @@ package commands
 
 import (
 	"context"
-	"encoding/csv"
 	"fmt"
 	"html"
 	"regexp"
@@ -164,7 +163,7 @@ func runBilletAudit(r utils.InteractionResponder, i *discordgo.InteractionCreate
 	if user != "" {
 		profile, err := utils.GetMilpacByUsername(ctx, user)
 		if err != nil {
-			utils.HandleError(r, i, fmt.Sprintf("❌ No milpac found for %q — use the forum username exactly as it appears on the roster.", user))
+			utils.HandleError(r, i, fmt.Sprintf("❌ No milpac found for %q. Use the forum username exactly as it appears on the roster.", user))
 			return
 		}
 		memberCount = 1
@@ -251,8 +250,8 @@ func runBilletAudit(r utils.InteractionResponder, i *discordgo.InteractionCreate
 		// Full results as attachments; Discord shows only the summary + sample.
 		stamp := scopeFilename(scope)
 		edit.Files = []*discordgo.File{
-			{Name: "billet_audit_" + stamp + ".csv", ContentType: "text/csv", Reader: strings.NewReader(buildBilletAuditCSV(rows))},
-			{Name: "billet_audit_" + stamp + ".html", ContentType: "text/html", Reader: strings.NewReader(buildBilletAuditHTML(scope, rows, memberCount, skipped))},
+			reportFile("billet_audit_"+stamp+".csv", "text/csv", buildBilletAuditCSV(rows)),
+			reportFile("billet_audit_"+stamp+".html", "text/html", buildBilletAuditHTML(scope, rows, memberCount, skipped)),
 		}
 	}
 	if err := r.InteractionResponseEdit(i.Interaction, edit); err != nil {
@@ -331,7 +330,7 @@ func formatBilletAuditSummary(scope string, rows []billetRow, flaggedMembers, me
 		return b.String()
 	}
 
-	fmt.Fprintf(&b, "📋 **Billet audit for %s** — %d instance(s) across %d of %d member(s):\n",
+	fmt.Fprintf(&b, "📋 **Billet audit for %s**: %d instance(s) across %d of %d member(s):\n",
 		scope, len(rows), flaggedMembers, memberCount)
 	counts := map[string]int{}
 	for _, row := range rows {
@@ -353,7 +352,7 @@ func formatBilletAuditSummary(scope string, rows []billetRow, flaggedMembers, me
 		if len(note) > 180 {
 			note = note[:180] + "…"
 		}
-		fmt.Fprintf(&b, "• **%s** (%s) [%s] — %s\n", row.Username, row.RankShort, row.Date, note)
+		fmt.Fprintf(&b, "• **%s** (%s) [%s]: %s\n", row.Username, row.RankShort, row.Date, note)
 	}
 	b.WriteString("\nFull results attached (CSV + HTML).")
 	return b.String()
@@ -376,27 +375,20 @@ func sampleBilletRows(rows []billetRow, n int) []billetRow {
 // buildBilletAuditCSV renders the findings as CSV. The writer targets a
 // strings.Builder, so no I/O error path exists in practice.
 func buildBilletAuditCSV(rows []billetRow) string {
-	var sb strings.Builder
-	w := csv.NewWriter(&sb)
-	_ = w.Write([]string{"username", "rank", "category", "date", "note", "milpac_url"})
+	out := make([][]string, 0, len(rows))
 	for _, row := range rows {
-		_ = w.Write([]string{row.Username, row.RankShort, row.Category, row.Date, row.Note, row.MilpacURL})
+		out = append(out, []string{row.Username, row.RankShort, row.Category, row.Date, row.Note, row.MilpacURL})
 	}
-	w.Flush()
-	return sb.String()
+	return csvReport([]string{"username", "rank", "category", "date", "note", "milpac_url"}, out)
 }
 
 // buildBilletAuditHTML renders a self-contained HTML table of the findings.
 func buildBilletAuditHTML(scope string, rows []billetRow, memberCount, skipped int) string {
 	var b strings.Builder
 	esc := html.EscapeString
-	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Billet Audit — ")
-	b.WriteString(esc(scope))
-	b.WriteString("</title><style>body{font-family:system-ui,Arial,sans-serif;margin:1.5rem;color:#111}" +
-		"h1{font-size:1.2rem}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:4px 8px;text-align:left;vertical-align:top;font-size:14px}" +
-		"th{background:#f0f0f0}tr:nth-child(even){background:#fafafa}.cat{white-space:nowrap}</style></head><body>")
-	fmt.Fprintf(&b, "<h1>Billet audit — %s</h1><p>%d instance(s) across %d member(s) audited.",
-		esc(scope), len(rows), memberCount)
+	writeReportHead(&b, "Billet audit: "+scope, ".cat{white-space:nowrap}")
+	fmt.Fprintf(&b, "<p class=\"meta\">%d instance(s) across %d member(s) audited.",
+		len(rows), memberCount)
 	if skipped > 0 {
 		fmt.Fprintf(&b, " %d skipped due to errors.", skipped)
 	}
@@ -409,7 +401,8 @@ func buildBilletAuditHTML(scope string, rows []billetRow, memberCount, skipped i
 		fmt.Fprintf(&b, "<tr><td>%s</td><td>%s</td><td class=\"cat\">%s</td><td>%s</td><td>%s</td></tr>",
 			name, esc(row.RankShort), esc(row.Category), esc(row.Date), esc(row.Note))
 	}
-	b.WriteString("</tbody></table></body></html>")
+	b.WriteString("</tbody></table>\n")
+	writeReportFoot(&b, "", "")
 	return b.String()
 }
 
@@ -440,9 +433,10 @@ func deptOf(role string) string {
 }
 
 // mosCategory maps a milpac MOS code to the branch/department it denotes, per
-// the 7Cav MOS table. Cross-cutting codes — general staff (00B/00Z/01A/00D),
-// RDC (50A) and FCC (49A), whose holders legitimately sit across departments —
-// are deliberately omitted, so a MOS/billet comparison there is never flagged.
+// the 7Cav MOS table. Cross-cutting codes are deliberately omitted so a
+// MOS/billet comparison there is never flagged: general staff (generalStaffMos,
+// shared with the COL→BG promotion gate), Officer Pool (00D), RDC (50A) and
+// FCC (49A), whose holders legitimately sit across departments.
 var mosCategory = map[string]string{
 	// combat branches
 	"11A": "infantry", "11B": "infantry", "11C": "infantry",
@@ -522,7 +516,7 @@ func auditMosVsBillet(profile *utils.ProfileResponse) string {
 	if billetCat == "" || strings.EqualFold(billetCat, mosCat) {
 		return ""
 	}
-	return fmt.Sprintf("MOS %s (%s) but primary billet %q looks like %s — MOS may be out of date; verify.",
+	return fmt.Sprintf("MOS %s (%s) but primary billet %q looks like %s. MOS may be out of date; verify.",
 		mosCode(profile.Mos), mosCat, normalizeRole(profile.Primary.PositionTitle), billetCat)
 }
 
@@ -609,7 +603,7 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 				dept := deptOf(role)
 				if prev := pendingByDept[dept]; prev != nil && !strings.EqualFold(prev.role, role) {
 					findings = append(findings, billetFinding{Date: r.Date, Category: billetCatAmbiguousTransfer, Note: fmt.Sprintf(
-						"assigned %q while %q (since %s) — same department (%s), no relief between: an unrecorded internal transfer, or a stacked duty? Records can't tell; verify in milpac.",
+						"assigned %q while %q (since %s). Same department (%s), no relief between: an unrecorded internal transfer, or a stacked duty? Records can't tell; verify in milpac.",
 						role, prev.role, prev.date, dept)})
 				}
 				pendingByDept[dept] = &openDuty{role: role, date: r.Date}
@@ -617,7 +611,7 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 		case viiRelievedRe.MatchString(r.Text):
 			if len(assignedRoles) == 0 {
 				findings = append(findings, billetFinding{Date: r.Date, Category: billetCatOrphanRelief,
-					Note: "\"Relieved of Duties\" with no assignment on record — missing assignment record?"})
+					Note: "\"Relieved of Duties\" with no assignment on record. Missing assignment record?"})
 			}
 			clearPending()
 		case billetDroppingDeparture(r.Text):
@@ -647,9 +641,9 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 			// A last-recorded assignment that was never superseded suggests the
 			// billet was renamed under the trooper (e.g. IMO Assistant →
 			// Regimental Technical Aide) rather than a truly missing record.
-			note += fmt.Sprintf(" — last recorded was %q; possible billet rename, or a missing record. Verify.", lastAssigned)
+			note += fmt.Sprintf(". Last recorded was %q; possible billet rename, or a missing record. Verify.", lastAssigned)
 		} else {
-			note += " — records incomplete?"
+			note += ". Records incomplete?"
 		}
 		findings = append(findings, billetFinding{Category: billetCatMissingRecord, Note: note})
 	}

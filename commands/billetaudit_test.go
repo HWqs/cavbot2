@@ -39,7 +39,7 @@ func TestAuditBilletRecords(t *testing.T) {
 				viiRec("2023-11-01", "Assigned WAG Admin IT"),
 				viiRec("2024-03-01", "Assigned WAG Admin"),
 			),
-			want: []string{"same department (WAG)"},
+			want: []string{"Same department (WAG)"},
 		},
 		{
 			name: "cross-department bare assigns are separate secondaries — no flag",
@@ -292,7 +292,7 @@ func TestRunBilletAuditScope(t *testing.T) {
 	if !strings.Contains(content, "1 instance(s) across 1 of 2 member(s)") {
 		t.Errorf("summary line wrong: %q", content)
 	}
-	if !strings.Contains(content, "Wag.W") || !strings.Contains(content, "same department (WAG)") {
+	if !strings.Contains(content, "Wag.W") || !strings.Contains(content, "Same department (WAG)") {
 		t.Errorf("flagged member missing from sample: %q", content)
 	}
 	if strings.Contains(content, "Clean.C") {
@@ -356,7 +356,7 @@ func TestRunBilletAuditUserMode(t *testing.T) {
 	runBilletAudit(f, billetAuditInteraction("", "Wag.W"))
 
 	content := lastEditContent(f.Calls())
-	if !strings.Contains(content, "Wag.W") || !strings.Contains(content, "same department (WAG)") {
+	if !strings.Contains(content, "Wag.W") || !strings.Contains(content, "Same department (WAG)") {
 		t.Errorf("user-mode audit wrong: %q", content)
 	}
 }
