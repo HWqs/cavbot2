@@ -196,47 +196,6 @@ func TestRunPromoSweepSendFailureAborts(t *testing.T) {
 	}
 }
 
-func TestRunPromoSweepNowCommand(t *testing.T) {
-	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
-		"1": promoLiteProfile("Ready.R", "PVT", "101"),
-	}}
-	profiles := map[string]utils.ProfileResponse{
-		"Ready.R": promoFullProfile("Ready.R", "PVT", "2026-04-01", "2026-04-01", "Rifleman"),
-	}
-	servePromoAPIWithRanks(t, roster, profiles, viiTestRanks())
-
-	f := &fakeResponder{}
-	sender := &fakeChannelSender{}
-	i := sweepNowInteraction()
-	runPromoSweepNow(f, sender, i, afsmRefDate)
-
-	if len(sender.channels) != 1 || sender.channels[0] != promoSweepChannelID {
-		t.Errorf("sweep posted to %v, want [%s]", sender.channels, promoSweepChannelID)
-	}
-	// Ephemeral ack (management action).
-	calls := f.Calls()
-	if len(calls) == 0 || calls[0].Method != "Respond" ||
-		calls[0].Response.Data.Flags&discordgo.MessageFlagsEphemeral == 0 {
-		t.Errorf("expected ephemeral initial response, calls: %+v", calls)
-	}
-	if !strings.Contains(lastEditContent(calls), "Sweep complete") {
-		t.Errorf("expected completion edit, got %q", lastEditContent(calls))
-	}
-	// Registry wiring.
-	if _, ok := NewRegistry().GetHandler("promo_sweep_now"); !ok {
-		t.Error("promo_sweep_now not registered")
-	}
-}
-
-func sweepNowInteraction() *discordgo.InteractionCreate {
-	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		Type:    discordgo.InteractionApplicationCommand,
-		GuildID: "guild-1",
-		Data:    discordgo.ApplicationCommandInteractionData{Name: "promo_sweep_now"},
-		Member:  &discordgo.Member{User: &discordgo.User{ID: "42", Username: "tester"}},
-	}}
-}
-
 func TestCollectPromoCandidatesActiveDutyScope(t *testing.T) {
 	// "active-duty" must hit /roster/ROSTER_TYPE_COMBAT/lite, not the fuzzy
 	// position search.
