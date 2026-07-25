@@ -10,7 +10,6 @@ package commands
 
 import (
 	"context"
-	"encoding/csv"
 	"fmt"
 	"html"
 	"sort"
@@ -284,7 +283,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 		case "as_of":
 			parsed, err := parsePromoDate(opt.StringValue())
 			if err != nil {
-				utils.HandleError(r, i, fmt.Sprintf("❌ Invalid as_of date %q — use DDMMMYY (e.g. 30JUL26)", opt.StringValue()))
+				utils.HandleError(r, i, fmt.Sprintf("❌ Invalid as_of date %q. Use DDMMMYY (e.g. 30JUL26).", opt.StringValue()))
 				return
 			}
 			asOf = parsed
@@ -297,7 +296,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 	// the whole Active Duty roster when no scope is given.
 	if user != "" {
 		if position != "" || rank != "" {
-			utils.HandleError(r, i, "❌ `user` checks one trooper on its own — don't combine it with `position` or `rank`.")
+			utils.HandleError(r, i, "❌ `user` checks one trooper on its own; don't combine it with `position` or `rank`.")
 			return
 		}
 		runPromoUser(r, i, user, asOf)
@@ -359,7 +358,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 		case rank != "" && !isActiveDutyScope(position):
 			utils.HandleError(r, i, fmt.Sprintf("❌ No %s troopers hold rank %s.", scopeDisplay(position), rank))
 		case rank != "":
-			utils.HandleError(r, i, fmt.Sprintf("❌ No active-duty troopers hold rank %s — use the milpac short form (e.g. PFC, SGT, CW2).", rank))
+			utils.HandleError(r, i, fmt.Sprintf("❌ No active-duty troopers hold rank %s. Use the milpac short form (e.g. PFC, SGT, CW2).", rank))
 		default:
 			utils.HandleError(r, i, emptyRosterSearchMessage(position))
 		}
@@ -383,7 +382,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 		captureDeferredEditFailure(i, "Promo", err)
 		return
 	}
-	utils.Info("✨ Done!", "command", "Promo", "position", logScope,
+	utils.Info("✨ Done!", "command", "Promo", "scope", logScope,
 		"eligible", len(res.Candidates), "omitted_from_message", omitted, "attached_file", attach)
 }
 
@@ -553,7 +552,7 @@ func formatPromoMessage(scope string, filter promoFilter, asOf time.Time, candid
 	}
 	omitted := len(candidates) - listed
 	if omitted > 0 {
-		b.WriteString(fmt.Sprintf("…and %d more — full list in the attached report.", omitted))
+		b.WriteString(fmt.Sprintf("…and %d more. Full list in the attached report.", omitted))
 	}
 	b.WriteString(footer)
 	return strings.TrimRight(b.String(), "\n"), omitted
@@ -564,7 +563,7 @@ func formatPromoMessage(scope string, filter promoFilter, asOf time.Time, candid
 func promoFooter(skippedCount int, viiActive bool) string {
 	var footer strings.Builder
 	if !viiActive {
-		footer.WriteString("\nℹ️ Veteran Rank Retention (§VII) check unavailable this run (rank data fetch failed) — standard ladder only.")
+		footer.WriteString("\nℹ️ Veteran Rank Retention (§VII) check unavailable this run (rank data fetch failed); standard ladder only.")
 	}
 	if skippedCount > 0 {
 		noun := "members"
@@ -776,7 +775,7 @@ func runPromoUser(r utils.InteractionResponder, i *discordgo.InteractionCreate, 
 	profile, err := utils.GetMilpacByUsername(ctx, username)
 	if err != nil {
 		// Username is user-supplied: not-found is a plausible outcome.
-		utils.HandleError(r, i, fmt.Sprintf("❌ No milpac found for %q — use the forum username exactly as it appears on the roster.", username))
+		utils.HandleError(r, i, fmt.Sprintf("❌ No milpac found for %q. Use the forum username exactly as it appears on the roster.", username))
 		return
 	}
 
@@ -830,7 +829,7 @@ func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, 
 			// into a Bn/Regt HQ senior-enlisted seat). COL is NOT here: it has
 			// a ladder entry gated on the regiment-HQ MOS. State it neutrally
 			// rather than claiming "topped out".
-			fmt.Fprintf(&b, "Standard ladder: no standard TIG/TIS ladder for %s — any advancement is billet-based and handled by S1 (see 7CAV-R-023).\n", profile.Rank.RankShort)
+			fmt.Fprintf(&b, "Standard ladder: no standard TIG/TIS ladder for %s. Any advancement is billet-based and handled by S1 (see 7CAV-R-023).\n", profile.Rank.RankShort)
 		} else {
 			b.WriteString("Standard ladder: no standard promotion ladder for this rank.\n")
 		}
@@ -869,7 +868,7 @@ func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, 
 			if detected == "" {
 				detected = "none listed"
 			}
-			fmt.Fprintf(&b, "%s MOS: %s (needs %s — regiment HQ)\n", checkmark(v.MosMet), detected, strings.Join(v.RequiredMos, "/"))
+			fmt.Fprintf(&b, "%s MOS: %s (needs %s, regiment HQ)\n", checkmark(v.MosMet), detected, strings.Join(v.RequiredMos, "/"))
 		}
 		if !v.Eligible && v.DaysUntilEligible > 0 {
 			fmt.Fprintf(&b, "⏳ ~%d day(s) until time requirements met.\n", v.DaysUntilEligible)
@@ -887,7 +886,7 @@ func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, 
 	case vii.EligibleNow:
 		fmt.Fprintf(&b, "\nVeteran Rank Retention (§VII): **eligible for %s**", vii.Target.Short)
 		if vii.TargetHeldDate != "" {
-			fmt.Fprintf(&b, " — held %s", vii.TargetHeldDate)
+			fmt.Fprintf(&b, ", held %s", vii.TargetHeldDate)
 			if vii.TargetHeldRole != "" {
 				fmt.Fprintf(&b, " as %s", vii.TargetHeldRole)
 			}
@@ -972,37 +971,17 @@ func promoCandidateTypes(c promoCandidate) []string {
 // clickable, and there is no spreadsheet import step. Everything is inlined
 // so the file works straight from a Discord download.
 func promoReportFile(scope string, filter promoFilter, asOf time.Time, scan promoScan) *discordgo.File {
-	title := fmt.Sprintf("%s eligibility — %s — %s",
+	title := fmt.Sprintf("%s eligibility: %s, %s",
 		upperFirst(filter.phrase()), scope, promoDate(asOf))
 
 	var b strings.Builder
-	b.WriteString("<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n")
-	fmt.Fprintf(&b, "<title>%s</title>\n", html.EscapeString(title))
-	b.WriteString(`<style>
-body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:2rem;color:#1a1a1a}
-h1{font-size:1.25rem;margin:0 0 .25rem}
-p.meta{color:#555;margin:0 0 1rem;font-size:.9rem}
-.controls{margin:0 0 1rem;font-size:.9rem}
-.controls input{padding:.35rem .5rem;font-size:.9rem;width:16rem;max-width:100%}
-.controls .hint{color:#777;margin-left:.5rem}
-table{border-collapse:collapse;width:100%;font-size:.875rem}
-th,td{border:1px solid #ddd;padding:.4rem .6rem;text-align:left;vertical-align:top}
-th{background:#f4f4f4;position:sticky;top:0;cursor:pointer;user-select:none;white-space:nowrap}
-th:hover{background:#e9e9e9}
-th.sorted-asc::after{content:" \25B2";color:#888}
-th.sorted-desc::after{content:" \25BC";color:#888}
-tr:nth-child(even) td{background:#fafafa}
-.note{margin-top:1.5rem;padding:.75rem;background:#fff8e1;border-left:3px solid #e6a700;font-size:.875rem}
-</style>
-`)
-	b.WriteString("</head><body>\n")
-	fmt.Fprintf(&b, "<h1>%s</h1>\n", html.EscapeString(title))
+	writeReportHead(&b, title, promoReportCSS)
 	fmt.Fprintf(&b, "<p class=\"meta\">%d candidate(s)", len(scan.Candidates))
 	if scan.SkippedCount > 0 {
 		fmt.Fprintf(&b, " · %d skipped due to errors (reported)", scan.SkippedCount)
 	}
 	if !scan.ViiActive {
-		b.WriteString(" · §VII check unavailable this run — standard ladder only")
+		b.WriteString(" · §VII check unavailable this run, standard ladder only")
 	}
 	b.WriteString("</p>\n")
 	b.WriteString("<div class=\"controls\"><input id=\"q\" type=\"search\" placeholder=\"Filter (e.g. discretionary, SGT, §VII)…\" autofocus>" +
@@ -1040,15 +1019,11 @@ tr:nth-child(even) td{background:#fafafa}
 			html.EscapeString(viiHeld), html.EscapeString(c.LateralTarget))
 	}
 	b.WriteString("</tbody></table>\n")
-	fmt.Fprintf(&b, "<p class=\"note\">%s</p>\n", html.EscapeString(promoDisclaimer))
-	b.WriteString(promoReportScript)
-	b.WriteString("</body></html>\n")
+	writeReportFoot(&b, promoDisclaimer, promoReportScript)
 
-	return &discordgo.File{
-		Name:        fmt.Sprintf("promo_report_%s_%s.html", promoFileScope(scope, filter), asOf.Format("2006-01-02")),
-		ContentType: "text/html",
-		Reader:      strings.NewReader(b.String()),
-	}
+	return reportFile(
+		fmt.Sprintf("promo_report_%s_%s.html", promoFileScope(scope, filter), asOf.Format("2006-01-02")),
+		"text/html", b.String())
 }
 
 // promoReportScript powers the HTML report's client-side filter and
@@ -1056,6 +1031,16 @@ tr:nth-child(even) td{background:#fafafa}
 // Discord download; no template data is interpolated, so it is a static
 // constant. A cell may carry a data-sort attribute (raw numeric value) which
 // the sort uses in place of the display text.
+// promoReportCSS adds the interactive affordances on top of reportBaseCSS:
+// the filter box and the sortable, clickable column headers.
+const promoReportCSS = `.controls{margin:0 0 1rem;font-size:.9rem}
+.controls input{padding:.35rem .5rem;font-size:.9rem;width:16rem;max-width:100%}
+.controls .hint{color:#777;margin-left:.5rem}
+th{cursor:pointer;user-select:none;white-space:nowrap}
+th:hover{background:#e9e9e9}
+th.sorted-asc::after{content:" \25B2";color:#888}
+th.sorted-desc::after{content:" \25BC";color:#888}`
+
 const promoReportScript = `<script>
 (function(){
   var table=document.getElementById('t'), tbody=table.tBodies[0];
@@ -1112,12 +1097,7 @@ func promoFileScope(scope string, filter promoFilter) string {
 // pivoting in a spreadsheet. Same rows as the HTML table; encoding/csv handles
 // escaping, and the strings.Builder target means no I/O error path in practice.
 func promoCSVFile(scope string, filter promoFilter, asOf time.Time, scan promoScan) *discordgo.File {
-	var sb strings.Builder
-	w := csv.NewWriter(&sb)
-	_ = w.Write([]string{
-		"username", "current_rank", "primary_billet", "next_rank", "path", "type",
-		"tig_days", "tis_days", "pending_courses", "vii_held", "lateral_target", "milpac_url",
-	})
+	rows := make([][]string, 0, len(scan.Candidates))
 	for _, c := range scan.Candidates {
 		viiHeld := ""
 		if c.ViaVII {
@@ -1130,17 +1110,18 @@ func promoCSVFile(scope string, filter promoFilter, asOf time.Time, scan promoSc
 				viiHeld += ")"
 			}
 		}
-		_ = w.Write([]string{
+		rows = append(rows, []string{
 			c.Username, c.RankShort, c.Primary, c.Verdict.NextRank,
 			strings.Join(promoCandidatePaths(c), ", "), strings.Join(promoCandidateTypes(c), " & "),
 			fmt.Sprintf("%d", c.Verdict.TigDays), fmt.Sprintf("%d", c.Verdict.TisDays),
 			strings.Join(c.Verdict.PendingDisplayCourses, ";"), viiHeld, c.LateralTarget, c.MilpacURL,
 		})
 	}
-	w.Flush()
-	return &discordgo.File{
-		Name:        fmt.Sprintf("promo_report_%s_%s.csv", promoFileScope(scope, filter), asOf.Format("2006-01-02")),
-		ContentType: "text/csv",
-		Reader:      strings.NewReader(sb.String()),
+	header := []string{
+		"username", "current_rank", "primary_billet", "next_rank", "path", "type",
+		"tig_days", "tis_days", "pending_courses", "vii_held", "lateral_target", "milpac_url",
 	}
+	return reportFile(
+		fmt.Sprintf("promo_report_%s_%s.csv", promoFileScope(scope, filter), asOf.Format("2006-01-02")),
+		"text/csv", csvReport(header, rows))
 }

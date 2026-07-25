@@ -61,11 +61,22 @@ var promotionRequirements = map[string]promotionRequirement{
 	"CPT": {NextRank: "MAJ", TigMonths: 6, Type: "discretionary", Courses: []string{"rdptc"}, Billets: []string{"XO", "CO", "DEPT"}},
 	"MAJ": {NextRank: "LTC", TigMonths: 6, Type: "discretionary", Courses: []string{"rdptc"}, Billets: []string{"XO", "CO", "DEPT"}},
 	"LTC": {NextRank: "COL", TigMonths: 6, Type: "discretionary"},
-	// COL→BG is gated purely on taking a regiment-HQ billet, denoted by the
-	// MOS 00B / 00Z / 01A (S1, 2026-07-25). No TIG requirement is modelled —
-	// the gate is the appointment. If R-023 later specifies a TIG, add it.
-	"COL": {NextRank: "BG", Type: "discretionary", MosCodes: []string{"00B", "00Z", "01A"}},
+	// COL→BG needs a regiment-HQ billet, denoted by a general-staff MOS
+	// (S1, 2026-07-25), and nine months at COL: R-023 Ch.2 §III sets the
+	// minimum TIG for O-7 at nine months, the only rung whose TIG comes from
+	// that section rather than the Chapter 2 table. The same section notes
+	// that billet limitations can waive it (Ch.5), which the ladder does not
+	// model — a waived promotion simply proposes early, as billet/fast-track
+	// promotions do at every other rank.
+	"COL": {NextRank: "BG", TigMonths: 9, Type: "discretionary", MosCodes: generalStaffMos},
 }
+
+// generalStaffMos are the MOS codes denoting a regiment-HQ (Regimental Staff)
+// appointment, which gates COL→BG (S1, 2026-07-25): 00B General Officer, 00Z
+// Command Sergeant Major, 01A Officer Generalist. 00D (Officer Pool) is NOT
+// included — the MOS table lists it separately from Regimental Staff, and a
+// pool officer is not in a regiment-HQ billet.
+var generalStaffMos = []string{"00B", "00Z", "01A"}
 
 // courseLabels maps internal course keys to display names.
 var courseLabels = map[string]string{
@@ -243,14 +254,14 @@ type promoEligibility struct {
 	RequiredBillets []string
 	// MOS gate (COL→BG): MosMet is true when no MOS is required or the
 	// trooper's MOS matches. RequiredMos echoes the gate for display.
-	MosMet      bool
-	DetectedMos string
-	RequiredMos []string
-	TigDays     int
-	TisDays         int
-	TigRequired     int
-	TisRequired     int
-	MissingCourses  []string
+	MosMet         bool
+	DetectedMos    string
+	RequiredMos    []string
+	TigDays        int
+	TisDays        int
+	TigRequired    int
+	TisRequired    int
+	MissingCourses []string
 	// Non-gating courses the trooper hasn't completed (display labels), e.g.
 	// ODS pending for an NCO ladder rank. Informational only.
 	PendingDisplayCourses []string

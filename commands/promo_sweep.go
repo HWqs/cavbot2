@@ -10,17 +10,13 @@ package commands
 // (a panic in one sweep must not kill the loop — see issue #119 rationale
 // there), a narrow session interface for testability, and a `now` seam.
 //
-// Configuration (env, all optional — defaults are live):
-//   PROMO_SWEEP_CHANNEL_ID — target channel (default: the S1 test channel)
-//   PROMO_SWEEP_POSITIONS  — comma-separated position scopes (default "ACD");
-//                            the special value "activeduty" (legacy spelling
-//                            "active-duty" also accepted) sweeps the whole
-//                            Active Duty roster (ROSTER_TYPE_COMBAT)
-//   PROMO_SWEEP_DISABLED   — set to "true" to not start the loop
-//
-// Env-var parity reminder: these must be listed in BOTH .env.example and the
-// docker-compose environment: block, or they silently never reach the
-// container (see CLAUDE.md build/deploy quirks).
+// The target channel and swept scopes are compile-time constants, not
+// environment variables. They are tenant-specific 7Cav identifiers, which the
+// bot keeps in code: the joiner report hardcodes its Discord IDs for the same
+// reason, /warden its role name. Environment variables here are reserved for
+// secrets and deployment identity. PROMO_SWEEP_DISABLED is the exception and
+// stays, because a kill switch is operational rather than tenant data and
+// wants to work without a redeploy.
 //
 // The /promo_sweep_now command fires the same sweep immediately — the
 // test-guild smoke-test trigger, since waiting for a weekly tick is not a
@@ -37,9 +33,15 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+// 7Cav-specific identifiers, hardcoded rather than env-configured because
+// they are tenant-specific (matching the joiner report and /warden).
 const (
-	defaultPromoSweepChannelID = "1529633362275471531"
-	defaultPromoSweepPositions = "activeduty"
+	promoSweepChannelID = "1529633362275471531"
+
+	// promoSweepScope is the scope swept each week. "activeduty" is the whole
+	// ROSTER_TYPE_COMBAT roster, which is what S1 asked for; see the API load
+	// note on promoSweepFilter.
+	promoSweepScope = "activeduty"
 )
 
 // TODO(S1 follow-up): Monday 09:00 UTC is a placeholder cadence chosen by
@@ -63,27 +65,14 @@ type promoSweepConfig struct {
 	Disabled  bool
 }
 
-// promoSweepConfigFromEnv reads sweep config with live defaults: an unset
-// environment still sweeps (per S1's request the feature is on by default);
-// PROMO_SWEEP_DISABLED=true is the off switch.
+// promoSweepConfigFromEnv builds the sweep config. Channel and scope are
+// constants; only the kill switch is read from the environment.
 func promoSweepConfigFromEnv() promoSweepConfig {
-	cfg := promoSweepConfig{
-		ChannelID: defaultPromoSweepChannelID,
-		Positions: strings.Split(defaultPromoSweepPositions, ","),
+	return promoSweepConfig{
+		ChannelID: promoSweepChannelID,
+		Positions: []string{promoSweepScope},
 		Disabled:  strings.EqualFold(os.Getenv("PROMO_SWEEP_DISABLED"), "true"),
 	}
-	if v := strings.TrimSpace(os.Getenv("PROMO_SWEEP_CHANNEL_ID")); v != "" {
-		cfg.ChannelID = v
-	}
-	if v := strings.TrimSpace(os.Getenv("PROMO_SWEEP_POSITIONS")); v != "" {
-		cfg.Positions = nil
-		for _, p := range strings.Split(v, ",") {
-			if p = strings.TrimSpace(p); p != "" {
-				cfg.Positions = append(cfg.Positions, p)
-			}
-		}
-	}
-	return cfg
 }
 
 // StartPromoSweepScheduler launches the weekly sweep goroutine. Called from
@@ -161,7 +150,7 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 				fmt.Errorf("empty roster for configured position %q", position),
 				"position", position,
 			)
-			msg.Content = fmt.Sprintf("⚠️ Promotion sweep: the %s roster came back empty — this shouldn't happen for a configured position. The issue has been reported.", position)
+			msg.Content = fmt.Sprintf("⚠️ Promotion sweep: the %s roster came back empty. This shouldn't happen for a configured scope; the issue has been reported.", position)
 		} else {
 			// Same rule as the slash command: the post keeps the inline list
 			// (and its "…and N more" notice), and anything longer rides the
@@ -243,7 +232,7 @@ func runPromoSweepNow(r utils.InteractionResponder, sender promoSweepSession, i 
 		return
 	}
 
-	msg := fmt.Sprintf("✅ Sweep complete — report posted to <#%s>.", cfg.ChannelID)
+	msg := fmt.Sprintf("✅ Sweep complete. Report posted to <#%s>.", cfg.ChannelID)
 	if err := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg}); err != nil {
 		captureDeferredEditFailure(i, "PromoSweepNow", err)
 		return

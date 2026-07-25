@@ -350,7 +350,7 @@ func TestRunPromoLongListAttachesReport(t *testing.T) {
 		t.Errorf("message length %d exceeds Discord limit", len(content))
 	}
 	// The message keeps the inline list and the "…and N more" overflow notice.
-	if !strings.Contains(content, "more — full list in the attached report") {
+	if !strings.Contains(content, "more. Full list in the attached report") {
 		t.Errorf("overflow notice missing: %q", content)
 	}
 	if !strings.Contains(content, "Member.000") {

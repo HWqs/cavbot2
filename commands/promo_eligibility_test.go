@@ -290,6 +290,44 @@ func TestCalculatePromotionEligibility(t *testing.T) {
 			},
 		},
 		{
+			name: "COL with the MOS but short of nine months TIG",
+			rank: "COL", promotionDate: "2026-01-01", joinDate: "2015-01-01",
+			position: "Regimental Commander", mos: "00B", wantEligible: false, wantNext: "BG",
+			check: func(t *testing.T, v promoEligibility) {
+				if !v.MosMet {
+					t.Error("MosMet = false, want true")
+				}
+				if v.TigMet {
+					t.Error("TigMet = true, want false (R-023 Ch.2 §III sets nine months at COL)")
+				}
+				if v.TigRequired != 9*30 {
+					t.Errorf("TigRequired = %d, want %d", v.TigRequired, 9*30)
+				}
+			},
+		},
+		{
+			// 00D is Officer Pool, not Regimental Staff — a pool officer is not
+			// in a regiment-HQ billet, so 00D does NOT gate COL→BG.
+			name: "COL on 00D (Officer Pool) is not BG-eligible",
+			rank: "COL", promotionDate: "2015-01-01", joinDate: "2010-01-01",
+			position: "Officer Pool", mos: "00D", wantEligible: false, wantNext: "BG",
+			check: func(t *testing.T, v promoEligibility) {
+				if v.MosMet {
+					t.Error("MosMet = true, want false (00D is Officer Pool, not Regimental Staff)")
+				}
+			},
+		},
+		{
+			name: "COL on 00Z (regimental staff) with 9mo TIG is BG-eligible",
+			rank: "COL", promotionDate: "2015-01-01", joinDate: "2010-01-01",
+			position: "Regimental Command Sergeant Major", mos: "00Z", wantEligible: true, wantNext: "BG",
+			check: func(t *testing.T, v promoEligibility) {
+				if !v.MosMet {
+					t.Error("MosMet = false, want true (00Z is Regimental Staff)")
+				}
+			},
+		},
+		{
 			name: "missing promotion date never eligible",
 			rank: "PVT", promotionDate: "", joinDate: "2026-01-01",
 			position: "Rifleman", wantEligible: false, wantNext: "PFC",

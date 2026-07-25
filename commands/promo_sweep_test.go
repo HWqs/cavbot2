@@ -37,33 +37,30 @@ func (f *fakeChannelSender) ChannelMessageSendComplex(channelID string, data *di
 }
 
 func TestPromoSweepConfigFromEnv(t *testing.T) {
-	// Unset env → live defaults (sweep on).
-	for _, k := range []string{"PROMO_SWEEP_CHANNEL_ID", "PROMO_SWEEP_POSITIONS", "PROMO_SWEEP_DISABLED"} {
-		t.Setenv(k, "")
-	}
+	// Channel and scope are constants; only the kill switch is environmental.
+	t.Setenv("PROMO_SWEEP_DISABLED", "")
 	cfg := promoSweepConfigFromEnv()
 	if cfg.Disabled {
 		t.Error("sweep should be enabled by default")
 	}
-	if cfg.ChannelID != defaultPromoSweepChannelID {
-		t.Errorf("ChannelID = %q, want default", cfg.ChannelID)
+	if cfg.ChannelID != promoSweepChannelID {
+		t.Errorf("ChannelID = %q, want the constant", cfg.ChannelID)
 	}
-	if len(cfg.Positions) != 1 || cfg.Positions[0] != "activeduty" {
-		t.Errorf("Positions = %v, want [activeduty]", cfg.Positions)
+	if len(cfg.Positions) != 1 || cfg.Positions[0] != promoSweepScope {
+		t.Errorf("Positions = %v, want [%s]", cfg.Positions, promoSweepScope)
 	}
 
-	t.Setenv("PROMO_SWEEP_CHANNEL_ID", "42")
-	t.Setenv("PROMO_SWEEP_POSITIONS", " S1 , 1-7 ,")
 	t.Setenv("PROMO_SWEEP_DISABLED", "TRUE")
-	cfg = promoSweepConfigFromEnv()
-	if !cfg.Disabled {
+	if !promoSweepConfigFromEnv().Disabled {
 		t.Error("PROMO_SWEEP_DISABLED=TRUE should disable (case-insensitive)")
 	}
-	if cfg.ChannelID != "42" {
-		t.Errorf("ChannelID = %q, want 42", cfg.ChannelID)
-	}
-	if len(cfg.Positions) != 2 || cfg.Positions[0] != "S1" || cfg.Positions[1] != "1-7" {
-		t.Errorf("Positions = %v, want [S1 1-7]", cfg.Positions)
+
+	// The channel is not overridable from the environment: a stray variable
+	// must not be able to redirect the sweep into another channel.
+	t.Setenv("PROMO_SWEEP_DISABLED", "")
+	t.Setenv("PROMO_SWEEP_CHANNEL_ID", "999")
+	if got := promoSweepConfigFromEnv().ChannelID; got != promoSweepChannelID {
+		t.Errorf("ChannelID = %q, want the constant to win", got)
 	}
 }
 
@@ -135,7 +132,7 @@ func TestRunPromoSweepAttachesReportForLongLists(t *testing.T) {
 	if !strings.Contains(sender.bodies[0], "Weekly promotion sweep") {
 		t.Errorf("sweep header missing: %q", sender.bodies[0])
 	}
-	if !strings.Contains(sender.bodies[0], "more — full list in the attached report") {
+	if !strings.Contains(sender.bodies[0], "more. Full list in the attached report") {
 		t.Errorf("overflow notice missing: %q", sender.bodies[0])
 	}
 	if !strings.Contains(sender.bodies[0], "Member.000") {
@@ -211,10 +208,7 @@ func TestRunPromoSweepSendFailureAborts(t *testing.T) {
 }
 
 func TestRunPromoSweepNowCommand(t *testing.T) {
-	for _, k := range []string{"PROMO_SWEEP_CHANNEL_ID", "PROMO_SWEEP_POSITIONS", "PROMO_SWEEP_DISABLED"} {
-		t.Setenv(k, "")
-	}
-	t.Setenv("PROMO_SWEEP_CHANNEL_ID", "chan-test")
+	t.Setenv("PROMO_SWEEP_DISABLED", "")
 	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
 		"1": promoLiteProfile("Ready.R", "PVT", "101"),
 	}}
@@ -228,8 +222,8 @@ func TestRunPromoSweepNowCommand(t *testing.T) {
 	i := sweepNowInteraction()
 	runPromoSweepNow(f, sender, i, afsmRefDate)
 
-	if len(sender.channels) != 1 || sender.channels[0] != "chan-test" {
-		t.Errorf("sweep posted to %v, want [chan-test]", sender.channels)
+	if len(sender.channels) != 1 || sender.channels[0] != promoSweepChannelID {
+		t.Errorf("sweep posted to %v, want [%s]", sender.channels, promoSweepChannelID)
 	}
 	// Ephemeral ack (management action).
 	calls := f.Calls()
