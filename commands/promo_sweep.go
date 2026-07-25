@@ -51,9 +51,10 @@ const (
 var promoSweepFireSchedule = mustWeeklyFireTime(time.Monday, 9, 0)
 
 // promoSweepSession is the Discord REST surface the sweep needs;
-// *discordgo.Session satisfies it.
+// *discordgo.Session satisfies it. The complex send rather than the plain one
+// so a large sweep can carry the full report as an attachment.
 type promoSweepSession interface {
-	ChannelMessageSend(channelID string, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
 }
 
 type promoSweepConfig struct {
@@ -150,7 +151,7 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 			utils.CaptureError("Promotion sweep position pass failed", err, "position", position)
 			continue
 		}
-		var bodies []string
+		msg := &discordgo.MessageSend{}
 		if scan.EmptyRoster {
 			// A configured (fixed-input) position returning empty is
 			// structurally a bug, not a user typo — Sentry per ADR 0002.
@@ -159,15 +160,18 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 				fmt.Errorf("empty roster for configured position %q", position),
 				"position", position,
 			)
-			bodies = []string{fmt.Sprintf("⚠️ Promotion sweep: the %s roster came back empty — this shouldn't happen for a configured position. The issue has been reported.", position)}
+			msg.Content = fmt.Sprintf("⚠️ Promotion sweep: the %s roster came back empty — this shouldn't happen for a configured position. The issue has been reported.", position)
 		} else {
-			bodies = formatPromoMessages(position, "", asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
-			bodies[0] = "📋 **Weekly promotion sweep**\n" + bodies[0]
-		}
-		for _, body := range bodies {
-			if _, err := s.ChannelMessageSend(cfg.ChannelID, body); err != nil {
-				return fmt.Errorf("send sweep message for %s: %w", position, err)
+			// Same overflow rule as the slash command: what fits goes in the
+			// post, the rest rides along as the attached report.
+			body, omitted := formatPromoMessage(position, "", asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
+			msg.Content = "📋 **Weekly promotion sweep**\n" + body
+			if omitted > 0 {
+				msg.Files = []*discordgo.File{promoReportFile(position, "", asOf, scan)}
 			}
+		}
+		if _, err := s.ChannelMessageSendComplex(cfg.ChannelID, msg); err != nil {
+			return fmt.Errorf("send sweep message for %s: %w", position, err)
 		}
 		utils.Info("Promotion sweep posted", "position", position, "eligible", len(scan.Candidates))
 	}

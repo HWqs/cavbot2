@@ -25,14 +25,16 @@ type fakeChannelSender struct {
 	mu       sync.Mutex
 	channels []string
 	bodies   []string
+	files    [][]*discordgo.File
 	errs     []error
 }
 
-func (f *fakeChannelSender) ChannelMessageSend(channelID string, content string, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+func (f *fakeChannelSender) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.channels = append(f.channels, channelID)
-	f.bodies = append(f.bodies, content)
+	f.bodies = append(f.bodies, data.Content)
+	f.files = append(f.files, data.Files)
 	return &discordgo.Message{}, popErr(&f.errs)
 }
 
@@ -115,9 +117,9 @@ func TestRunPromoSweepPostsPerPosition(t *testing.T) {
 	}
 }
 
-// A long candidate list splits across multiple channel messages — nothing is
-// truncated and every message stays under the Discord cap.
-func TestRunPromoSweepChunksLongLists(t *testing.T) {
+// A long candidate list posts one message with what fits and attaches the
+// full report, rather than paging the channel.
+func TestRunPromoSweepAttachesReportForLongLists(t *testing.T) {
 	roster, profiles := manyEligiblePVTs(60)
 	servePromoAPIWithRanks(t, roster, profiles, viiTestRanks())
 
@@ -126,27 +128,42 @@ func TestRunPromoSweepChunksLongLists(t *testing.T) {
 	if err := runPromoSweep(sender, cfg, afsmRefDate); err != nil {
 		t.Fatalf("runPromoSweep: %v", err)
 	}
-	if len(sender.bodies) < 2 {
-		t.Fatalf("60 candidates should span multiple messages, got %d", len(sender.bodies))
+	if len(sender.bodies) != 1 {
+		t.Fatalf("expected a single post, got %d", len(sender.bodies))
 	}
-	joined := strings.Join(sender.bodies, "\n")
-	for i := 0; i < 60; i++ {
-		name := fmt.Sprintf("Member.%03d", i)
-		if !strings.Contains(joined, name) {
-			t.Fatalf("candidate %s missing from sweep output", name)
-		}
-	}
-	for idx, body := range sender.bodies {
-		if len(body) >= 2000 {
-			t.Errorf("message %d length %d exceeds Discord limit", idx, len(body))
-		}
+	if len(sender.bodies[0]) >= 2000 {
+		t.Errorf("message length %d exceeds Discord limit", len(sender.bodies[0]))
 	}
 	if !strings.Contains(sender.bodies[0], "Weekly promotion sweep") {
-		t.Errorf("sweep header missing from first message: %q", sender.bodies[0])
+		t.Errorf("sweep header missing: %q", sender.bodies[0])
 	}
-	if strings.Contains(sender.bodies[1], "Weekly promotion sweep") {
-		t.Errorf("sweep header must only render once: %q", sender.bodies[1])
+	if !strings.Contains(sender.bodies[0], "full list in the attached report") {
+		t.Errorf("overflow notice missing: %q", sender.bodies[0])
 	}
+	if len(sender.files) != 1 || len(sender.files[0]) != 1 {
+		t.Fatalf("expected one attached report, got %+v", sender.files)
+	}
+	if !strings.HasSuffix(sender.files[0][0].Name, ".html") {
+		t.Errorf("attachment = %q, want .html", sender.files[0][0].Name)
+	}
+	// Every candidate reaches the reader, via the report.
+	report := readFileBody(t, sender.files[0][0])
+	for i := 0; i < 60; i++ {
+		name := fmt.Sprintf("Member.%03d", i)
+		if !strings.Contains(report, name) {
+			t.Fatalf("candidate %s missing from attached report", name)
+		}
+	}
+}
+
+// readFileBody drains a discordgo file attachment.
+func readFileBody(t *testing.T, f *discordgo.File) string {
+	t.Helper()
+	var sb strings.Builder
+	if _, err := io.Copy(&sb, f.Reader); err != nil {
+		t.Fatalf("read attachment: %v", err)
+	}
+	return sb.String()
 }
 
 func TestRunPromoSweepEmptyConfiguredRosterReportsBug(t *testing.T) {

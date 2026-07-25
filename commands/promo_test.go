@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -213,9 +214,9 @@ func TestRunPromoMemberFetchFailureSkipsAndReports(t *testing.T) {
 	}
 }
 
-// A long list must render EVERY candidate, split across messages that each
-// respect Discord's 2000-char cap — no truncation.
-func TestFormatPromoMessagesChunksLongLists(t *testing.T) {
+// A long list fills one message and reports the remainder for the attached
+// report — the message never exceeds Discord's cap.
+func TestFormatPromoMessageOverflows(t *testing.T) {
 	candidates := make([]promoCandidate, 80)
 	for idx := range candidates {
 		candidates[idx] = promoCandidate{
@@ -225,36 +226,43 @@ func TestFormatPromoMessagesChunksLongLists(t *testing.T) {
 			Verdict:   promoEligibility{Eligible: true, NextRank: "PFC", Type: "automatic"},
 		}
 	}
-	messages := formatPromoMessages("ACD", "", mustParseDate("2026-05-15"), candidates, 1, false)
-	if len(messages) < 2 {
-		t.Fatalf("80 candidates should span multiple messages, got %d", len(messages))
+	msg, omitted := formatPromoMessage("ACD", "", mustParseDate("2026-05-15"), candidates, 1, false)
+	if omitted <= 0 {
+		t.Fatalf("80 candidates should overflow one message, omitted = %d", omitted)
 	}
-	joined := strings.Join(messages, "\n")
-	for _, c := range candidates {
-		if !strings.Contains(joined, c.Username) {
-			t.Fatalf("candidate %s missing from output", c.Username)
-		}
+	if len(msg) >= 2000 {
+		t.Errorf("message length %d exceeds Discord limit", len(msg))
 	}
-	if strings.Contains(joined, "more (narrow") {
-		t.Errorf("truncation notice must be gone: %q", joined)
+	if !strings.Contains(msg, fmt.Sprintf("…and %d more", omitted)) {
+		t.Errorf("overflow notice missing or miscounted: %q", msg)
 	}
-	for idx, m := range messages {
-		if len(m) >= 2000 {
-			t.Errorf("message %d length %d exceeds Discord limit", idx, len(m))
-		}
+	if !strings.Contains(msg, "members eligible for promotion") {
+		t.Errorf("header missing: %q", msg)
 	}
-	// Header on the first message only; footers on the last only.
-	if !strings.Contains(messages[0], "members eligible for promotion") {
-		t.Errorf("header missing from first message: %q", messages[0])
+	// Footer notes survive alongside the overflow notice.
+	if !strings.Contains(msg, "standard ladder only") || !strings.Contains(msg, "1 member skipped") {
+		t.Errorf("footer notes missing: %q", msg)
 	}
-	last := messages[len(messages)-1]
-	if !strings.Contains(last, "standard ladder only") || !strings.Contains(last, "1 member skipped") {
-		t.Errorf("footer notes missing from last message: %q", last)
+	// The listed names are a prefix of the candidate order.
+	if !strings.Contains(msg, "Member.000") {
+		t.Errorf("first candidate missing: %q", msg)
 	}
-	for _, m := range messages[:len(messages)-1] {
-		if strings.Contains(m, "standard ladder only") || strings.Contains(m, "skipped") {
-			t.Errorf("footer notes must only render on the last message: %q", m)
-		}
+}
+
+// A list that fits needs no attachment.
+func TestFormatPromoMessageFitsWithoutOverflow(t *testing.T) {
+	candidates := []promoCandidate{{
+		Username:  "Ready.R",
+		MilpacURL: "https://7cav.us/rosters/profile/1",
+		RankShort: "PVT",
+		Verdict:   promoEligibility{Eligible: true, NextRank: "PFC", Type: "automatic"},
+	}}
+	msg, omitted := formatPromoMessage("ACD", "", mustParseDate("2026-05-15"), candidates, 0, true)
+	if omitted != 0 {
+		t.Errorf("omitted = %d, want 0", omitted)
+	}
+	if strings.Contains(msg, "attached report") {
+		t.Errorf("overflow notice should not render: %q", msg)
 	}
 }
 
@@ -271,45 +279,41 @@ func manyEligiblePVTs(n int) (utils.LiteRosterResponse, map[string]utils.Profile
 	return roster, profiles
 }
 
-// A scope whose list exceeds one message must deliver the tail via follow-up
-// messages — every candidate reaches the channel.
-func TestRunPromoLongListSendsFollowups(t *testing.T) {
+// A scope whose list exceeds one message posts what fits and attaches the
+// full report — every candidate still reaches the reader.
+func TestRunPromoLongListAttachesReport(t *testing.T) {
 	roster, profiles := manyEligiblePVTs(60)
 	servePromoAPIWithRanks(t, roster, profiles, viiTestRanks())
 
 	f := &fakeResponder{}
 	runPromo(f, promoInteraction("ACD", ""), afsmRefDate)
 
-	parts := []string{lastEditContent(f.Calls())}
-	for _, call := range f.Calls() {
-		if call.Method == "Followup" && call.Params != nil {
-			parts = append(parts, call.Params.Content)
-		}
+	content := lastEditContent(f.Calls())
+	if len(content) >= 2000 {
+		t.Errorf("message length %d exceeds Discord limit", len(content))
 	}
-	if len(parts) < 2 {
-		t.Fatalf("60 candidates should need follow-up messages, calls: %d parts", len(parts))
+	if !strings.Contains(content, "full list in the attached report") {
+		t.Errorf("overflow notice missing: %q", content)
 	}
-	joined := strings.Join(parts, "\n")
+	body, name := lastAttachment(t, f)
+	if !strings.HasSuffix(name, ".html") {
+		t.Errorf("attachment = %q, want .html", name)
+	}
 	for i := 0; i < 60; i++ {
-		name := fmt.Sprintf("Member.%03d", i)
-		if !strings.Contains(joined, name) {
-			t.Fatalf("candidate %s missing from combined output", name)
-		}
-	}
-	for idx, p := range parts {
-		if len(p) >= 2000 {
-			t.Errorf("part %d length %d exceeds Discord limit", idx, len(p))
+		who := fmt.Sprintf("Member.%03d", i)
+		if !strings.Contains(body, who) {
+			t.Fatalf("candidate %s missing from attached report", who)
 		}
 	}
 }
 
-func TestFormatPromoMessagesNoCandidates(t *testing.T) {
-	messages := formatPromoMessages("ACD", "", mustParseDate("2026-05-15"), nil, 0, true)
-	if len(messages) != 1 {
-		t.Fatalf("expected a single message, got %d", len(messages))
+func TestFormatPromoMessageNoCandidates(t *testing.T) {
+	msg, omitted := formatPromoMessage("ACD", "", mustParseDate("2026-05-15"), nil, 0, true)
+	if omitted != 0 {
+		t.Errorf("omitted = %d, want 0", omitted)
 	}
-	if !strings.Contains(messages[0], "No ACD members eligible") {
-		t.Errorf("expected no-candidates message, got %q", messages[0])
+	if !strings.Contains(msg, "No ACD members eligible") {
+		t.Errorf("expected no-candidates message, got %q", msg)
 	}
 }
 
@@ -319,7 +323,7 @@ func TestPromoDefinition(t *testing.T) {
 		t.Errorf("command name = %q, want promo", cmd.Definition.Name)
 	}
 	if len(cmd.Definition.Options) != 6 {
-		t.Fatalf("options = %d, want 6 (position, user, rank, type, as_of, export_csv)", len(cmd.Definition.Options))
+		t.Fatalf("options = %d, want 6 (position, user, rank, type, as_of, force_file_output)", len(cmd.Definition.Options))
 	}
 	for _, opt := range cmd.Definition.Options {
 		if opt.Required {
@@ -906,9 +910,9 @@ func promoUserInteraction(username, asOf string) *discordgo.InteractionCreate {
 	}}
 }
 
-// --- CSV export ---------------------------------------------------------------
+// --- file report -------------------------------------------------------------
 
-func TestRunPromoCSVExport(t *testing.T) {
+func TestRunPromoForceFileOutput(t *testing.T) {
 	vet := viiVetProfile()
 	vet.UniformUrl = "https://7cav.us/data/roster_uniforms/0/301.jpg"
 	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
@@ -924,13 +928,56 @@ func TestRunPromoCSVExport(t *testing.T) {
 	i := promoInteraction("ACD", "")
 	data := i.Data.(discordgo.ApplicationCommandInteractionData)
 	data.Options = append(data.Options, &discordgo.ApplicationCommandInteractionDataOption{
-		Name: "export_csv", Type: discordgo.ApplicationCommandOptionBoolean, Value: true,
+		Name: "force_file_output", Type: discordgo.ApplicationCommandOptionBoolean, Value: true,
 	})
 	i.Data = data
 
 	f := &fakeResponder{}
 	runPromo(f, i, afsmRefDate)
 
+	body, name := lastAttachment(t, f)
+	if !strings.HasSuffix(name, ".html") {
+		t.Errorf("file name = %q, want .html", name)
+	}
+	if !strings.Contains(body, "<table>") || !strings.Contains(body, "eligibility") {
+		t.Errorf("report structure missing: %q", body)
+	}
+	if !strings.Contains(body, "Ready.R") || !strings.Contains(body, "Vet.V") {
+		t.Errorf("report missing candidates: %q", body)
+	}
+	if !strings.Contains(body, "§VII") {
+		t.Errorf("report missing §VII path data: %q", body)
+	}
+	// A short list forced to file still renders inline too.
+	if strings.Contains(lastEditContent(f.Calls()), "attached report") {
+		t.Errorf("forced file should not claim overflow: %q", lastEditContent(f.Calls()))
+	}
+}
+
+// Milpac text is user-entered and must not break out of the report markup.
+func TestPromoReportEscapesMilpacData(t *testing.T) {
+	scan := promoScan{ViiActive: true, Candidates: []promoCandidate{{
+		Username:  `Evil<script>alert("x")</script>`,
+		MilpacURL: "https://7cav.us/rosters/profile/1",
+		RankShort: "PVT",
+		Verdict:   promoEligibility{Eligible: true, NextRank: "PFC", Type: "automatic"},
+	}}}
+	file := promoReportFile("ACD", "", mustParseDate("2026-05-15"), scan)
+	var sb strings.Builder
+	if _, err := io.Copy(&sb, file.Reader); err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	if strings.Contains(sb.String(), "<script>") {
+		t.Errorf("unescaped markup reached the report: %q", sb.String())
+	}
+	if !strings.Contains(sb.String(), "&lt;script&gt;") {
+		t.Errorf("expected escaped markup: %q", sb.String())
+	}
+}
+
+// lastAttachment returns the body and name of the file on the last Edit call.
+func lastAttachment(t *testing.T, f *fakeResponder) (string, string) {
+	t.Helper()
 	var edit *discordgo.WebhookEdit
 	for _, call := range f.Calls() {
 		if call.Method == "Edit" && call.Edit != nil {
@@ -940,21 +987,9 @@ func TestRunPromoCSVExport(t *testing.T) {
 	if edit == nil || len(edit.Files) != 1 {
 		t.Fatalf("expected one attached file, calls: %+v", f.Calls())
 	}
-	if !strings.HasSuffix(edit.Files[0].Name, ".csv") {
-		t.Errorf("file name = %q, want .csv", edit.Files[0].Name)
+	var sb strings.Builder
+	if _, err := io.Copy(&sb, edit.Files[0].Reader); err != nil {
+		t.Fatalf("read attachment: %v", err)
 	}
-	buf := new(strings.Builder)
-	if _, err := ioCopy(buf, edit.Files[0].Reader); err != nil {
-		t.Fatalf("read csv: %v", err)
-	}
-	csvBody := buf.String()
-	if !strings.Contains(csvBody, "username,current_rank,next_rank,path") {
-		t.Errorf("CSV header missing: %q", csvBody)
-	}
-	if !strings.Contains(csvBody, "Ready.R,PVT,PFC,standard") {
-		t.Errorf("standard candidate row missing: %q", csvBody)
-	}
-	if !strings.Contains(csvBody, "Vet.V,CPL,SGT,vii") || !strings.Contains(csvBody, "SSG,2021-01-01") {
-		t.Errorf("§VII candidate row missing: %q", csvBody)
-	}
+	return sb.String(), edit.Files[0].Name
 }

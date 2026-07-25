@@ -10,8 +10,8 @@ package commands
 
 import (
 	"context"
-	"encoding/csv"
 	"fmt"
+	"html"
 	"sort"
 	"strings"
 	"time"
@@ -50,6 +50,10 @@ type promoCandidate struct {
 // 2000-character cap with headroom for the sweep's header prefix. Long
 // candidate lists span multiple messages instead of truncating.
 const promoMessageLimit = 1900
+
+// promoOverflowReserve is the space held back from promoMessageLimit for the
+// "…and N more" notice, so appending it can never overflow the message.
+const promoOverflowReserve = 80
 
 // promoDisclaimer heads every /promo output (list and single-trooper), since
 // both derive eligibility from hand-entered milpac data.
@@ -162,8 +166,8 @@ func Promo() Command {
 				},
 				{
 					Type:        discordgo.ApplicationCommandOptionBoolean,
-					Name:        "export_csv",
-					Description: "Attach the full candidate list as a CSV file (position mode)",
+					Name:        "force_file_output",
+					Description: "Always attach the full candidate list as a file. Long lists attach automatically.",
 					Required:    false,
 				},
 				{
@@ -194,7 +198,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 	utils.Info("🚀 Starting Promo Check", "command", "Promo", "username", username, "discord_id", discordID)
 
 	position, user, rank, promoType := "", "", "", ""
-	exportCSV := false
+	forceFile := false
 	asOf := now
 	for _, opt := range i.ApplicationCommandData().Options {
 		switch opt.Name {
@@ -206,8 +210,8 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 			rank = opt.StringValue()
 		case "type":
 			promoType = opt.StringValue()
-		case "export_csv":
-			exportCSV = opt.BoolValue()
+		case "force_file_output":
+			forceFile = opt.BoolValue()
 		case "as_of":
 			parsed, err := parsePromoDate(opt.StringValue())
 			if err != nil {
@@ -294,26 +298,17 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 		res.Candidates = filterPromoCandidates(res.Candidates, promoType)
 	}
 
-	if exportCSV {
-		sendPromoCSV(r, i, scope, promoType, asOf, res)
-		utils.Info("✨ Done!", "command", "Promo", "position", logScope, "eligible", len(res.Candidates), "output", "csv")
-		return
+	message, omitted := formatPromoMessage(scope, promoType, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
+	edit := &discordgo.WebhookEdit{Content: &message}
+	if forceFile || omitted > 0 {
+		edit.Files = []*discordgo.File{promoReportFile(scope, promoType, asOf, res)}
 	}
-
-	messages := formatPromoMessages(scope, promoType, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
-	if err := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &messages[0]}); err != nil {
+	if err := r.InteractionResponseEdit(i.Interaction, edit); err != nil {
 		captureDeferredEditFailure(i, "Promo", err)
 		return
 	}
-	// Long lists continue in follow-up messages; a failed follow-up is
-	// reported and stops the remainder (the same channel would fail again).
-	for _, m := range messages[1:] {
-		if err := r.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: m}); err != nil {
-			utils.CaptureError("❌ Promo follow-up send failed", err, "position", logScope)
-			return
-		}
-	}
-	utils.Info("✨ Done!", "command", "Promo", "position", logScope, "eligible", len(res.Candidates))
+	utils.Info("✨ Done!", "command", "Promo", "position", logScope,
+		"eligible", len(res.Candidates), "omitted_from_message", omitted, "attached_file", forceFile || omitted > 0)
 }
 
 // filterPromoCandidates keeps only candidates eligible via the given
@@ -416,32 +411,14 @@ func evaluatePromoMember(
 	}, nil
 }
 
-// formatPromoMessages renders the final output as one or more Discord-sized
-// messages: every candidate renders, with long lists split across messages
-// rather than truncated. The first message carries the disclaimer and header;
-// footer notes land on the last. The disclaimer always renders: eligibility
-// is parsed from user-entered milpac data, so formatting drift can silently
-// skew results (same rationale as /afsm).
-func formatPromoMessages(scope, promoType string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) []string {
-	var messages []string
-	var b strings.Builder
-	b.WriteString(promoDisclaimer)
-	b.WriteString("\n\n")
-
-	if len(candidates) == 0 {
-		b.WriteString(fmt.Sprintf("No %s members eligible for %s as of %s", scopeDisplay(scope), promoPhrase(promoType), promoDate(asOf)))
-	} else {
-		b.WriteString(fmt.Sprintf("**%s members eligible for %s as of %s:**\n", upperFirst(scopeDisplay(scope)), promoPhrase(promoType), promoDate(asOf)))
-		for _, c := range candidates {
-			line := formatPromoLine(c)
-			if b.Len()+len(line) > promoMessageLimit {
-				messages = append(messages, strings.TrimRight(b.String(), "\n"))
-				b.Reset()
-			}
-			b.WriteString(line)
-		}
-	}
-
+// formatPromoMessage renders the candidate list as a single Discord message
+// and reports how many candidates did not fit. A roster-wide scope can return
+// hundreds of candidates — far more than Discord will carry and more than
+// anyone wants paged through a channel — so the message shows as many as fit
+// and the caller attaches the full report when omitted > 0. The disclaimer
+// always renders: eligibility is parsed from user-entered milpac data, so
+// formatting drift can silently skew results (same rationale as /afsm).
+func formatPromoMessage(scope, promoType string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) (string, int) {
 	var footer strings.Builder
 	if !viiActive {
 		footer.WriteString("\nℹ️ Veteran Rank Retention (§VII) check unavailable this run (rank data fetch failed) — standard ladder only.")
@@ -453,16 +430,38 @@ func formatPromoMessages(scope, promoType string, asOf time.Time, candidates []p
 		}
 		footer.WriteString(fmt.Sprintf("\n⚠️ %d %s skipped due to errors (reported)", skippedCount, noun))
 	}
-	if b.Len()+footer.Len() > promoMessageLimit {
-		messages = append(messages, strings.TrimRight(b.String(), "\n"))
-		b.Reset()
-	}
-	if b.Len() == 0 {
-		b.WriteString(strings.TrimLeft(footer.String(), "\n"))
-	} else {
+
+	var b strings.Builder
+	b.WriteString(promoDisclaimer)
+	b.WriteString("\n\n")
+
+	if len(candidates) == 0 {
+		b.WriteString(fmt.Sprintf("No %s members eligible for %s as of %s", scopeDisplay(scope), promoPhrase(promoType), promoDate(asOf)))
 		b.WriteString(footer.String())
+		return strings.TrimRight(b.String(), "\n"), 0
 	}
-	return append(messages, strings.TrimRight(b.String(), "\n"))
+
+	b.WriteString(fmt.Sprintf("**%s members eligible for %s as of %s:**\n", upperFirst(scopeDisplay(scope)), promoPhrase(promoType), promoDate(asOf)))
+
+	// Reserve room for the footer and a worst-case overflow notice so the
+	// message cannot be pushed over the limit by what gets appended after
+	// the loop.
+	budget := promoMessageLimit - footer.Len() - promoOverflowReserve
+	listed := 0
+	for _, c := range candidates {
+		line := formatPromoLine(c)
+		if b.Len()+len(line) > budget {
+			break
+		}
+		b.WriteString(line)
+		listed++
+	}
+	omitted := len(candidates) - listed
+	if omitted > 0 {
+		b.WriteString(fmt.Sprintf("…and %d more — full list in the attached report.", omitted))
+	}
+	b.WriteString(footer.String())
+	return strings.TrimRight(b.String(), "\n"), omitted
 }
 
 // formatPromoLine renders one candidate. Standard candidates show the ladder
@@ -808,71 +807,85 @@ func formatDays(days int) string {
 // CSV export
 // ---------------------------------------------------------------------------
 
-// sendPromoCSV attaches the full candidate list as a CSV file, following the
-// /awol force_file_output pattern (issue #4 export optional). CSV escapes are
-// handled by encoding/csv; the writer targets a strings.Builder so no error
-// path exists in practice, but Flush errors are still surfaced. The filename
-// keeps machine-friendly forms (raw scope, ISO date) for sorting; the message
-// prose follows the org style.
-func sendPromoCSV(r utils.InteractionResponder, i *discordgo.InteractionCreate, scope, promoType string, asOf time.Time, scan promoScan) {
-	var sb strings.Builder
-	w := csv.NewWriter(&sb)
-	_ = w.Write([]string{
-		"username", "current_rank", "next_rank", "path", "type",
-		"tig_days", "tig_required", "tis_days", "tis_required",
-		"pending_courses", "vii_target", "vii_held_date", "vii_held_role", "lateral_target", "milpac_url",
-	})
+// promoReportFile renders the full candidate list as a standalone HTML
+// report, attached whenever the list outruns one message or the caller asks
+// for it. HTML rather than CSV because this is read rather than pivoted: at
+// a few hundred rows the table stays legible in a browser, milpac links stay
+// clickable, and there is no spreadsheet import step. Everything is inlined
+// so the file works straight from a Discord download.
+func promoReportFile(scope, promoType string, asOf time.Time, scan promoScan) *discordgo.File {
+	title := fmt.Sprintf("%s eligibility — %s — %s",
+		upperFirst(promoPhrase(promoType)), scopeDisplay(scope), promoDate(asOf))
+
+	var b strings.Builder
+	b.WriteString("<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n")
+	fmt.Fprintf(&b, "<title>%s</title>\n", html.EscapeString(title))
+	b.WriteString(`<style>
+body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:2rem;color:#1a1a1a}
+h1{font-size:1.25rem;margin:0 0 .25rem}
+p.meta{color:#555;margin:0 0 1.5rem;font-size:.9rem}
+table{border-collapse:collapse;width:100%;font-size:.875rem}
+th,td{border:1px solid #ddd;padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:#f4f4f4;position:sticky;top:0}
+tr:nth-child(even) td{background:#fafafa}
+.note{margin-top:1.5rem;padding:.75rem;background:#fff8e1;border-left:3px solid #e6a700;font-size:.875rem}
+</style>
+`)
+	b.WriteString("</head><body>\n")
+	fmt.Fprintf(&b, "<h1>%s</h1>\n", html.EscapeString(title))
+	fmt.Fprintf(&b, "<p class=\"meta\">%d candidate(s)", len(scan.Candidates))
+	if scan.SkippedCount > 0 {
+		fmt.Fprintf(&b, " · %d skipped due to errors (reported)", scan.SkippedCount)
+	}
+	if !scan.ViiActive {
+		b.WriteString(" · §VII check unavailable this run — standard ladder only")
+	}
+	b.WriteString("</p>\n")
+
+	b.WriteString("<table><thead><tr>" +
+		"<th>Trooper</th><th>Rank</th><th>Next</th><th>Path</th><th>Type</th>" +
+		"<th>TIG</th><th>TIS</th><th>Pending</th><th>§VII held</th><th>Lateral</th>" +
+		"</tr></thead><tbody>\n")
 	for _, c := range scan.Candidates {
 		var paths []string
 		if c.Verdict.Eligible {
 			paths = append(paths, "standard")
 		}
-		viiTarget, viiHeldDate, viiHeldRole := "", "", ""
+		viiHeld := ""
 		if c.ViaVII {
-			paths = append(paths, "vii")
-			viiTarget = c.Vii.Target.Short
-			viiHeldDate = c.Vii.TargetHeldDate
-			viiHeldRole = c.Vii.TargetHeldRole
+			paths = append(paths, "§VII")
+			viiHeld = c.Vii.Target.Short
+			if c.Vii.TargetHeldDate != "" {
+				viiHeld += " (held " + c.Vii.TargetHeldDate
+				if c.Vii.TargetHeldRole != "" {
+					viiHeld += " as " + c.Vii.TargetHeldRole
+				}
+				viiHeld += ")"
+			}
 		}
 		if c.LateralTarget != "" {
 			paths = append(paths, "lateral")
 		}
-		_ = w.Write([]string{
-			c.Username, c.RankShort, c.Verdict.NextRank, strings.Join(paths, "+"), c.Verdict.Type,
-			fmt.Sprintf("%d", c.Verdict.TigDays), fmt.Sprintf("%d", c.Verdict.TigRequired),
-			fmt.Sprintf("%d", c.Verdict.TisDays), fmt.Sprintf("%d", c.Verdict.TisRequired),
-			strings.Join(c.Verdict.PendingDisplayCourses, ";"),
-			viiTarget, viiHeldDate, viiHeldRole, c.LateralTarget, c.MilpacURL,
-		})
+		fmt.Fprintf(&b, "<tr><td><a href=\"%s\">%s</a></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"+
+			"<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>\n",
+			html.EscapeString(c.MilpacURL), html.EscapeString(c.Username),
+			html.EscapeString(c.RankShort), html.EscapeString(c.Verdict.NextRank),
+			html.EscapeString(strings.Join(paths, " + ")), html.EscapeString(c.Verdict.Type),
+			formatDays(c.Verdict.TigDays), formatDays(c.Verdict.TisDays),
+			html.EscapeString(strings.Join(c.Verdict.PendingDisplayCourses, ", ")),
+			html.EscapeString(viiHeld), html.EscapeString(c.LateralTarget))
 	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		utils.CaptureError("Promo CSV write failed", err)
-		utils.HandleError(r, i, fmt.Sprintf("❌ Failed to build CSV: %v", err))
-		return
-	}
+	b.WriteString("</tbody></table>\n")
+	fmt.Fprintf(&b, "<p class=\"note\">%s</p>\n", html.EscapeString(promoDisclaimer))
+	b.WriteString("</body></html>\n")
 
 	fileScope := strings.ReplaceAll(scope, "/", "-")
 	if promoType != "" {
 		fileScope += "_" + promoType
 	}
-	file := &discordgo.File{
-		Name:        fmt.Sprintf("promo_report_%s_%s.csv", fileScope, asOf.Format("2006-01-02")),
-		ContentType: "text/csv",
-		Reader:      strings.NewReader(sb.String()),
-	}
-	content := fmt.Sprintf("%s eligibility report for %s as of %s — %d candidate(s).",
-		upperFirst(promoPhrase(promoType)), scopeDisplay(scope), promoDate(asOf), len(scan.Candidates))
-	if scan.SkippedCount > 0 {
-		content += fmt.Sprintf(" ⚠️ %d skipped due to errors (reported).", scan.SkippedCount)
-	}
-	if !scan.ViiActive {
-		content += " ℹ️ §VII check unavailable this run — standard ladder only."
-	}
-	if err := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: &content,
-		Files:   []*discordgo.File{file},
-	}); err != nil {
-		captureDeferredEditFailure(i, "Promo", err)
+	return &discordgo.File{
+		Name:        fmt.Sprintf("promo_report_%s_%s.html", fileScope, asOf.Format("2006-01-02")),
+		ContentType: "text/html",
+		Reader:      strings.NewReader(b.String()),
 	}
 }
