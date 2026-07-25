@@ -7,7 +7,7 @@ package commands
 //
 // Scope note: this implements the STANDARD promotion ladder only. The
 // Veteran Rank Retention (Ch.4 §VII) alternative path from the source tool's
-// veteran-retention engine is intentionally out of scope here — it needs full service
+// veteran-retention engine is intentionally out of scope here: it needs full service
 // record archaeology and is tracked as a follow-up.
 
 import (
@@ -31,7 +31,7 @@ type promotionRequirement struct {
 	// Billets that satisfy the position requirement; nil = no requirement.
 	Billets []string
 	// MosCodes gates the step on the trooper's MOS (prefix match), for
-	// promotions defined by an appointment rather than a position title —
+	// promotions defined by an appointment rather than a position title -
 	// COL→BG requires a regiment-HQ MOS. nil = no MOS requirement.
 	MosCodes []string
 }
@@ -40,7 +40,7 @@ type promotionRequirement struct {
 // tool's requirements table (7CAV-R-023), with one deliberate deviation: the
 // source surfaced ODS as an informational "pending" course on the NCO ladder,
 // but ODS only matters for commissioning (which needs a Platoon Leader
-// assignment first) — S1 asked for it to be dropped from /promo output
+// assignment first). S1 asked for it to be dropped from /promo output
 // (2026-07-23). DisplayCourses stays plumbed for future informational needs.
 var promotionRequirements = map[string]promotionRequirement{
 	"PVT": {NextRank: "PFC", TigMonths: 1, Type: "automatic"},
@@ -66,7 +66,7 @@ var promotionRequirements = map[string]promotionRequirement{
 	// minimum TIG for O-7 at nine months, the only rung whose TIG comes from
 	// that section rather than the Chapter 2 table. The same section notes
 	// that billet limitations can waive it (Ch.5), which the ladder does not
-	// model — a waived promotion simply proposes early, as billet/fast-track
+	// model: a waived promotion simply proposes early, as billet/fast-track
 	// promotions do at every other rank.
 	"COL": {NextRank: "BG", TigMonths: 9, Type: "discretionary", MosCodes: generalStaffMos},
 }
@@ -74,7 +74,7 @@ var promotionRequirements = map[string]promotionRequirement{
 // generalStaffMos are the MOS codes denoting a regiment-HQ (Regimental Staff)
 // appointment, which gates COL→BG (S1, 2026-07-25): 00B General Officer, 00Z
 // Command Sergeant Major, 01A Officer Generalist. 00D (Officer Pool) is NOT
-// included — the MOS table lists it separately from Regimental Staff, and a
+// included: the MOS table lists it separately from Regimental Staff, and a
 // pool officer is not in a regiment-HQ billet.
 var generalStaffMos = []string{"00B", "00Z", "01A"}
 
@@ -124,7 +124,7 @@ func parseCourseCompletions(records []utils.Record) courseCompletions {
 
 		if strings.Contains(details, "ncoa") &&
 			(strings.Contains(details, "phase i") || strings.Contains(details, "phase 1") || strings.Contains(details, "wlc")) {
-			// "phase i" is a prefix of "phase ii" — disambiguate.
+			// "phase i" is a prefix of "phase ii": disambiguate.
 			if strings.Contains(details, "phase ii") || strings.Contains(details, "phase 2") {
 				c.NcoaPhase2 = true
 			} else {
@@ -355,7 +355,7 @@ func calculatePromotionEligibility(
 // A full milpac fetch costs roughly a second and the roster-wide scopes run
 // to hundreds of members, so the expensive call is worth avoiding wherever
 // the lite roster already proves it cannot change the answer. The lite
-// payload carries rank, primary position, join date and promotion date —
+// payload carries rank, primary position, join date and promotion date -
 // everything the standard ladder needs except course completions.
 //
 // This mirrors how /afsm narrows on the roster payload before reaching for
@@ -375,12 +375,12 @@ func calculatePromotionEligibility(
 // to close later: §VII can only be excluded where the billet ceiling is no
 // more senior than the rank already held, which is rare below the top of a
 // billet, and the lateral path has to open every NCO record to look for
-// flight wings. Anything better for unfiltered runs — the weekly sweep
-// included — needs a profile cache rather than a smarter filter.
+// flight wings. Anything better for unfiltered runs (the weekly sweep
+// included) needs a profile cache rather than a smarter filter.
 //
 // The one invariant that matters: the pre-filter must never drop somebody
 // evaluatePromoMember would have returned as a candidate. Every check below
-// is therefore written to fail towards fetching — unknown rank, missing
+// is therefore written to fail towards fetching: unknown rank, missing
 // date, or absent position title all mean "cannot tell, so fetch".
 
 // promoAllCourses is a course record with everything marked complete. Feeding
@@ -440,13 +440,13 @@ func ladderTypeMatches(member utils.LiteProfileResponse, promoType string) bool 
 // profile fetch can rescue them.
 func standardPathPossible(member utils.LiteProfileResponse, asOf time.Time) bool {
 	// Absent dates or position mean the lite record cannot settle the
-	// question — a milpac with a blank promotion date is a data problem, not
+	// question: a milpac with a blank promotion date is a data problem, not
 	// evidence of ineligibility, so defer to the full profile.
 	if member.PromotionDate == "" || member.JoinDate == "" || member.Primary.PositionTitle == "" {
 		return true
 	}
 	// The lite roster carries no MOS, so a MOS-gated step (COL→BG) can't be
-	// judged here — always fetch to check.
+	// judged here: always fetch to check.
 	if len(promotionRequirements[member.Rank.RankShort].MosCodes) > 0 {
 		return true
 	}
@@ -490,7 +490,7 @@ func viiPathPossible(member utils.LiteProfileResponse, m *viiRankModel) bool {
 	}
 	if member.Primary.PositionTitle == "" {
 		// Without a billet there is no ceiling to compare against, and an
-		// absent title is not the same as a member billet — treating it as
+		// absent title is not the same as a member billet: treating it as
 		// one would silently drop a returning veteran whose real billet
 		// rates well above their current rank.
 		return true
@@ -502,7 +502,7 @@ func viiPathPossible(member utils.LiteProfileResponse, m *viiRankModel) bool {
 		ceilShort = ceil.Officer
 	}
 	if ceilShort == "" {
-		// No ceiling defined for this billet on this track — viiAnalyze
+		// No ceiling defined for this billet on this track: viiAnalyze
 		// cannot produce a restoration target either, so nothing to fetch
 		// for. (It may still flag the billet for manual review, but that
 		// never makes somebody a candidate.)

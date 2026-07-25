@@ -1,11 +1,11 @@
 package commands
 
-// /billetaudit — milpac billet-record hygiene audit for S1.
+// /billetaudit: milpac billet-record hygiene audit for S1.
 //
 // Milpac billet records are hand-entered and reliefs are sometimes forgotten,
 // especially on internal department moves ("Assigned WAG Admin IT" →
 // "Assigned WAG Admin" with no relief between). Those gaps are invisible in
-// day-to-day use but poison anything computed from the record stream — most
+// day-to-day use but poison anything computed from the record stream, most
 // immediately the §VII retirement timer (vii.go), which credits departmental
 // service rendered while in the Reserves and so depends on reliefs being
 // recorded. This command walks each member's records with the same parsers
@@ -14,7 +14,7 @@ package commands
 //
 // Scope model mirrors /promo: at most one of position/user, defaulting to the
 // whole Active Duty roster. Output is ephemeral (admin/management command
-// convention — see warden.go).
+// convention; see warden.go).
 
 import (
 	"context"
@@ -67,7 +67,7 @@ type billetFinding struct {
 // findings are reported).
 type billetAuditReport struct {
 	Username  string
-	MilpacURL string // "" when the uniform URL doesn't parse — render unlinked
+	MilpacURL string // "" when the uniform URL doesn't parse; render unlinked
 	RankShort string
 	Findings  []billetFinding
 }
@@ -359,7 +359,7 @@ func formatBilletAuditSummary(scope string, rows []billetRow, flaggedMembers, me
 }
 
 // sampleBilletRows returns up to n rows spread evenly across the (rank-sorted)
-// list — a representative sample rather than just the top n.
+// list, a representative sample rather than just the top n.
 func sampleBilletRows(rows []billetRow, n int) []billetRow {
 	if len(rows) <= n {
 		return rows
@@ -420,7 +420,7 @@ func billetDroppingDeparture(t string) bool {
 	}
 }
 
-// deptOf extracts a coarse department key from a normalized staff role — its
+// deptOf extracts a coarse department key from a normalized staff role: its
 // leading token, upper-cased (e.g. "S2 Investigator IT" → "S2", "RTC Drill
 // Instructor" → "RTC", "WAG Admin IT" → "WAG"). Used to tell a same-department
 // internal transfer from two separate cross-department secondaries.
@@ -471,7 +471,7 @@ var (
 // billetImpliedCategory returns the branch/department a primary billet clearly
 // implies, or "" when it can't be told confidently. Only the reliably
 // separable categories are returned (aviation/medical by keyword, the staff
-// departments by their leading code) — a plain line billet ("Rifleman 1/1/A")
+// departments by their leading code). A plain line billet ("Rifleman 1/1/A")
 // yields "", so it never triggers a mismatch.
 func billetImpliedCategory(positionTitle string) string {
 	role := normalizeRole(positionTitle)
@@ -502,7 +502,7 @@ func mosCode(mos string) string {
 }
 
 // auditMosVsBillet flags a trooper whose MOS denotes one branch/department
-// while their primary billet clearly implies a different one — e.g. an 11B
+// while their primary billet clearly implies a different one, e.g. an 11B
 // (infantry) MOS on an aviation billet, or an S6 MOS on an S2 billet. Returns
 // "" when either side is unknown or they agree. Conservative by design: the
 // billet side only speaks up for categories it can pin, so ordinary line
@@ -525,16 +525,16 @@ func auditMosVsBillet(profile *utils.ProfileResponse) string {
 // billet but any number of secondaries, so the flags key off that:
 //
 //   - a bare "Assigned <staff>" following another bare "Assigned <staff>" in
-//     the SAME department with no intervening relief — an unrecorded internal
+//     the SAME department with no intervening relief: an unrecorded internal
 //     transfer, or a stacked duty; the records can't tell which. Explicit
 //     primary moves ("Transferred and Assigned"/"Reassigned to") replace the
 //     single primary cleanly, explicit "as Additional Duty" secondaries stack
 //     freely, and bare assigns in DIFFERENT departments are just separate
-//     secondaries — none are flagged;
+//     secondaries (none are flagged);
 //   - "Relieved of Duties" with no prior assignment on record;
 //   - a current LEADERSHIP/DEPARTMENT billet (detectBillet != "") that appears
 //     in no assignment record. Generic no-leadership roles (Trooper, Combat
-//     Medic — MOS/position descriptors) are skipped.
+//     Medic: MOS/position descriptors) are skipped.
 //
 // Departures that drop all billets by policy (retirement, discharge,
 // death/memorial) are NOT missing-relief findings and clear the audit state.
@@ -560,11 +560,11 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 	}
 
 	// pendingByDept holds the last ambiguous bare "Assigned <staff>" still open
-	// PER DEPARTMENT — a bare assign is neither an explicit primary
+	// PER DEPARTMENT. A bare assign is neither an explicit primary
 	// ("Transferred and Assigned"/"Reassigned to") nor an explicit secondary
 	// ("as Additional Duty"). Two bare assigns in the SAME department without
 	// an intervening relief are the audit target: an unrecorded internal
-	// transfer, or a stacked duty — the records can't tell which. Bare assigns
+	// transfer, or a stacked duty; the records can't tell which. Bare assigns
 	// in DIFFERENT departments (S2 then RTC) are just separate secondaries,
 	// which are always allowed, so they never flag.
 	type openDuty struct {
@@ -575,7 +575,7 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 	clearPending := func() { pendingByDept = map[string]*openDuty{} }
 	// assignedRoles is the set of every role ever assigned (normalized,
 	// lower-cased), reset on a billet-dropping departure. The roster-vs-records
-	// check flags only when the CURRENT billet appears in none of them — a
+	// check flags only when the CURRENT billet appears in none of them: a
 	// genuinely unrecorded billet, not merely one that differs from an earlier
 	// primary (staff members routinely move up from a line billet, so a
 	// last-primary comparison flags almost everyone).
@@ -596,7 +596,7 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 			if isPrimaryMove || viiBilletType(role) == "line" {
 				clearPending()
 			}
-			// Explicit additional duties are secondaries (stackable) — never
+			// Explicit additional duties are secondaries (stackable), never
 			// flagged. Only consecutive bare staff assigns in the SAME
 			// department are.
 			if viiBilletType(role) == "staff" && !isPrimaryMove && !isAddlDuty {
@@ -616,7 +616,7 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 			clearPending()
 		case billetDroppingDeparture(r.Text):
 			// Retirement, discharge, and death/memorial (RIP, Arlington, Wall
-			// of Honor) drop ALL billets by policy — no explicit relief is
+			// of Honor) drop ALL billets by policy; no explicit relief is
 			// expected. Clear the audit state so a later return is audited
 			// against post-return records only.
 			clearPending()
@@ -631,7 +631,7 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 
 	// Roster-vs-records: a current LEADERSHIP or DEPARTMENT billet should
 	// appear somewhere in the post-departure assignment history. Generic
-	// no-leadership roles (Trooper, Rifleman, Combat Medic — MOS/position
+	// no-leadership roles (Trooper, Rifleman, Combat Medic: MOS/position
 	// descriptors, not billets) have detectBillet == "" and are skipped, so
 	// "Trooper" vs a recorded "Combat Medic" is never a finding.
 	cur := normalizeRole(profile.Primary.PositionTitle)

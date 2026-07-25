@@ -1,17 +1,17 @@
 package commands
 
-// Scheduled promotion sweep — the issue #4 "Notify" requirement. A weekly
+// Scheduled promotion sweep: the issue #4 "Notify" requirement. A weekly
 // background pass posts the promotion-eligible candidate list for the
 // configured position scopes to a configured channel, so S1 gets told
 // rather than having to remember to ask.
 //
 // Pattern mirrors the Star Citizen joiner-report scheduler
 // (star_citizen_joiners.go): sleep-until-fire loop, per-fire panic recovery
-// (a panic in one sweep must not kill the loop — see issue #119 rationale
+// (a panic in one sweep must not kill the loop; see issue #119 rationale
 // there), a narrow session interface for testability, and a `now` seam.
 //
 // The target channel, swept scope, and the kill switch are all compile-time
-// constants, not environment variables — tenant-specific 7Cav config the bot
+// constants, not environment variables: tenant-specific 7Cav config the bot
 // keeps in code, matching the joiner report (hardcoded Discord IDs) and
 // /warden (role name). Environment variables here are reserved for secrets and
 // deployment identity. Disabling the sweep or moving its channel is a code
@@ -85,7 +85,7 @@ func StartPromoSweepScheduler(s *discordgo.Session) {
 
 // runPromoSweepSchedulerLoop is the goroutine body; split out for the `now`
 // seam. Per-fire panic recovery keeps the loop alive across a bad sweep; no
-// in-cycle retry — next Monday is the retry.
+// in-cycle retry; next Monday is the retry.
 func runPromoSweepSchedulerLoop(s promoSweepSession, cfg promoSweepConfig, now func() time.Time) {
 	for {
 		fire := nextPromoSweepFire(now())
@@ -137,7 +137,7 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 		msg := &discordgo.MessageSend{}
 		if scan.EmptyRoster {
 			// A configured (fixed-input) position returning empty is
-			// structurally a bug, not a user typo — Sentry per ADR 0002.
+			// structurally a bug, not a user typo; Sentry per ADR 0002.
 			utils.CaptureError(
 				"Promotion sweep roster lookup returned zero members",
 				fmt.Errorf("empty roster for configured position %q", position),

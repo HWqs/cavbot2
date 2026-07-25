@@ -11,18 +11,18 @@ package commands
 //
 // The source engine's display-only extras (ops/class counts, service-medal lists,
 // retirement eligibility check, secondary-billet retirement credit) are not
-// ported — this file covers the eligibility determination only.
+// ported; this file covers the eligibility determination only.
 //
 // Behavioral fidelity notes: regexes, check ordering, and threshold constants
 // are transcribed 1:1 from the source; where the source had quirks (e.g. the
 // rank-parse regex only matching single-digit grades, so "(O-11)" never
-// parses) those quirks are preserved deliberately — this engine's outputs
+// parses) those quirks are preserved deliberately, since this engine's outputs
 // were validated against real milpac records in production use, and "fixing"
 // a quirk here would desync the two implementations.
 //
 // Two deliberate deviations from the source, per S1 clarification of the
 // policy (2026-07-23, smoke-test review):
-//   - Eligibility is GATED on a qualifying departure — an actual retirement,
+//   - Eligibility is GATED on a qualifying departure: an actual retirement,
 //     or a reserve transfer made while retirement-eligible. The source
 //     computed this ("Qualifies") but surfaced it as context only, which
 //     flagged members who never departed or who left to reserves before
@@ -59,7 +59,7 @@ const (
 // would make it harder to check against the source, but the engine never
 // consults it: viiW2E normalises a warrant rank to its NCO equivalent before
 // any comparison, so a warrant officer is measured against the Enlisted
-// ceiling. Correcting a Warrant value therefore changes nothing — the
+// ceiling. Correcting a Warrant value therefore changes nothing, since the
 // behaviour lives in viiW2E and the Enlisted column.
 //
 // Minimum ranks are deliberately not modelled. R-023 gives them, but they
@@ -247,7 +247,7 @@ var viiRankRecordRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9 ]*?)\s*\([EOW]-?\d
 var viiEligibleSplitRe = regexp.MustCompile(`(?i)\beligible\b`)
 
 // rankFromRecord returns the LAST resolvable rank mentioned before any
-// "eligible" clause — promotion records read "Promoted to X (E-n)".
+// "eligible" clause, because promotion records read "Promoted to X (E-n)".
 func rankFromRecord(text string, m *viiRankModel) *viiRank {
 	if loc := viiEligibleSplitRe.FindStringIndex(text); loc != nil {
 		text = text[:loc[0]]
@@ -496,7 +496,7 @@ func computeService(recs []viiRecord, asOf string) viiService {
 			if status != "active" {
 				status = "active"
 				// A span already open (reserve + departmental duty) continues
-				// uninterrupted — departmental service was still service.
+				// uninterrupted, because departmental service was still service.
 				if enlistStart == "" {
 					enlistStart = d
 					eloaPause, eloaStart = 0, ""
@@ -540,10 +540,10 @@ func computeService(recs []viiRecord, asOf string) viiService {
 
 		// Staff-duty tracking (after the state switch: the transfer cases read
 		// the pre-record duty state). Only real billets update the single duty
-		// slot — a non-billet capture like "Reserves" leaves a continuing
+		// slot; a non-billet capture like "Reserves" leaves a continuing
 		// departmental duty in place (dept members are routinely reservists).
 		// A relief clears the slot; so does any billet-dropping departure
-		// (retirement, discharge, death) — otherwise a pre-departure duty
+		// (retirement, discharge, death); otherwise a pre-departure duty
 		// would leak into a later reserve span and inflate the timer.
 		switch {
 		case viiRetiredRe.MatchString(t) && !viiInLieuRe.MatchString(t),
@@ -688,7 +688,7 @@ type viiResult struct {
 	Reasons             []string
 	// Qualifies: the member has a qualifying departure (retirement, or a
 	// reserve transfer while retirement-eligible). Gates EligibleNow and
-	// PotentiallyEligible — a deliberate deviation from the source, which
+	// PotentiallyEligible, a deliberate deviation from the source, which
 	// carried this as context only (S1 clarification, 2026-07-23).
 	Qualifies  bool
 	Downgraded bool
@@ -744,8 +744,8 @@ func viiAnalyze(profile *utils.ProfileResponse, m *viiRankModel, asOf time.Time)
 	// Qualifying departures gate §VII outright (S1 clarification, 2026-07-23):
 	// an actual retirement, or a reserve transfer made while
 	// retirement-eligible (reserves in lieu of retirement). No qualifying
-	// departure — including a "Returned from Retirement" with no parseable
-	// departure, where the held ranks can't be trusted either — means the
+	// departure (including a "Returned from Retirement" with no parseable
+	// departure, where the held ranks can't be trusted either) means the
 	// veteran-retention path simply does not apply.
 	var qDeps []viiDeparture
 	for _, d := range service.Departures {
@@ -795,7 +795,7 @@ func viiAnalyze(profile *utils.ProfileResponse, m *viiRankModel, asOf time.Time)
 		// A primary billet changes only via "Transferred and Assigned" /
 		// "Reassigned to"; a bare "Assigned <staff role>" is a secondary
 		// department duty layered on the existing primary (a bare assign to a
-		// LINE billet — boot-camp Trooper, First Sergeant — is still primary).
+		// LINE billet, like boot-camp Trooper or First Sergeant, is still primary).
 		if b != "" {
 			if viiPrimaryMoveRe.MatchString(r.Text) || viiBilletType(b) == "line" {
 				curRole = b
@@ -865,7 +865,7 @@ func viiAnalyze(profile *utils.ProfileResponse, m *viiRankModel, asOf time.Time)
 
 	// Eligible rank = the most senior rank ACTUALLY HELD in the same billet
 	// type that the CURRENT billet rates (level between ceiling and current).
-	// No capping of a too-high rank — they must have held it; if the billet
+	// No capping of a too-high rank; they must have held it; if the billet
 	// can't rate any held rank above their current one, they're INELIGIBLE.
 	type lvlEntry struct {
 		lvl int
@@ -926,7 +926,7 @@ func viiAnalyze(profile *utils.ProfileResponse, m *viiRankModel, asOf time.Time)
 	eligibleNow := qualifies && targetRank != nil && !downgraded && !blocked
 
 	// Without a qualifying departure the member is not a returning veteran at
-	// all — no "potentially eligible" reasons either.
+	// all, with no "potentially eligible" reasons either.
 	var reasons []string
 	if qualifies && targetRank != nil && !eligibleNow {
 		if downgraded {
@@ -934,7 +934,7 @@ func viiAnalyze(profile *utils.ProfileResponse, m *viiRankModel, asOf time.Time)
 			if downgradeText != "" {
 				r += fmt.Sprintf(" (%q)", downgradeText)
 			}
-			reasons = append(reasons, r+" - per CoC, eligibility is decided case-by-case.")
+			reasons = append(reasons, r+". Per CoC, eligibility is decided case-by-case.")
 		}
 		if blocked {
 			var parts []string
@@ -944,14 +944,14 @@ func viiAnalyze(profile *utils.ProfileResponse, m *viiRankModel, asOf time.Time)
 			if articleWithinYear(discipline, asOfISO) {
 				parts = append(parts, "Article 15/32 within the last year")
 			}
-			reasons = append(reasons, fmt.Sprintf("Promotion blocked by %s - eligible once standing clears.", strings.Join(parts, " + ")))
+			reasons = append(reasons, fmt.Sprintf("Promotion blocked by %s; eligible once standing clears.", strings.Join(parts, " + ")))
 		}
 	} else if qualifies && targetRank == nil && ceilLvl < 0 && hasHigherSameType {
 		displayRole := role
 		if displayRole == "" {
 			displayRole = "unknown"
 		}
-		reasons = append(reasons, fmt.Sprintf("Current billet (%s) has no defined rank rating in the billet table - needs manual review.", displayRole))
+		reasons = append(reasons, fmt.Sprintf("Current billet (%s) has no defined rank rating in the billet table; needs manual review.", displayRole))
 	}
 	potentiallyEligible := len(reasons) > 0
 	var potentialRank *viiRank
