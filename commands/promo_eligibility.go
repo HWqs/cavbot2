@@ -30,6 +30,10 @@ type promotionRequirement struct {
 	DisplayCourses []string
 	// Billets that satisfy the position requirement; nil = no requirement.
 	Billets []string
+	// MosCodes gates the step on the trooper's MOS (prefix match), for
+	// promotions defined by an appointment rather than a position title —
+	// COL→BG requires a regiment-HQ MOS. nil = no MOS requirement.
+	MosCodes []string
 }
 
 // promotionRequirements is keyed by rankShort. Transcribed from the source
@@ -57,6 +61,10 @@ var promotionRequirements = map[string]promotionRequirement{
 	"CPT": {NextRank: "MAJ", TigMonths: 6, Type: "discretionary", Courses: []string{"rdptc"}, Billets: []string{"XO", "CO", "DEPT"}},
 	"MAJ": {NextRank: "LTC", TigMonths: 6, Type: "discretionary", Courses: []string{"rdptc"}, Billets: []string{"XO", "CO", "DEPT"}},
 	"LTC": {NextRank: "COL", TigMonths: 6, Type: "discretionary"},
+	// COL→BG is gated purely on taking a regiment-HQ billet, denoted by the
+	// MOS 00B / 00Z / 01A (S1, 2026-07-25). No TIG requirement is modelled —
+	// the gate is the appointment. If R-023 later specifies a TIG, add it.
+	"COL": {NextRank: "BG", Type: "discretionary", MosCodes: []string{"00B", "00Z", "01A"}},
 }
 
 // courseLabels maps internal course keys to display names.
@@ -186,6 +194,23 @@ func billetMeetsRequirement(detected string, required []string) bool {
 	return false
 }
 
+// mosMeetsRequirement reports whether the trooper's MOS satisfies the rank's
+// MOS gate. Empty gate = always satisfied. Matching is a case-insensitive
+// prefix test, mirroring how §VII reads the aviation MOS (^15), since the
+// milpac MOS field leads with the code.
+func mosMeetsRequirement(mos string, required []string) bool {
+	if len(required) == 0 {
+		return true
+	}
+	m := strings.ToUpper(strings.TrimSpace(mos))
+	for _, code := range required {
+		if strings.HasPrefix(m, strings.ToUpper(code)) {
+			return true
+		}
+	}
+	return false
+}
+
 // daysBetween returns whole days from dateStr (YYYY-MM-DD) to asOf, or -1 if
 // the date is missing/unparseable/sentinel. Mirrors the source daysSince, with
 // "now" generalized to an arbitrary as-of date per issue #4's date filter.
@@ -216,7 +241,12 @@ type promoEligibility struct {
 	DetectedBillet string
 	// RequiredBillets echoes the rank's billet gate for display; nil = none.
 	RequiredBillets []string
-	TigDays         int
+	// MOS gate (COL→BG): MosMet is true when no MOS is required or the
+	// trooper's MOS matches. RequiredMos echoes the gate for display.
+	MosMet      bool
+	DetectedMos string
+	RequiredMos []string
+	TigDays     int
 	TisDays         int
 	TigRequired     int
 	TisRequired     int
@@ -235,7 +265,7 @@ type promoEligibility struct {
 func calculatePromotionEligibility(
 	rankShort, promotionDate, joinDate string,
 	courses courseCompletions,
-	positionTitle string,
+	positionTitle, mos string,
 	asOf time.Time,
 ) promoEligibility {
 	req, ok := promotionRequirements[rankShort]
@@ -269,6 +299,8 @@ func calculatePromotionEligibility(
 	detected := detectBillet(positionTitle)
 	billetMet := billetMeetsRequirement(detected, req.Billets)
 
+	mosMet := mosMeetsRequirement(mos, req.MosCodes)
+
 	daysUntilTig := 0
 	if !tigMet && tigDays >= 0 {
 		daysUntilTig = tigRequired - tigDays
@@ -283,7 +315,7 @@ func calculatePromotionEligibility(
 	}
 
 	return promoEligibility{
-		Eligible:              tigMet && tisMet && coursesMet && billetMet,
+		Eligible:              tigMet && tisMet && coursesMet && billetMet && mosMet,
 		NextRank:              req.NextRank,
 		Type:                  req.Type,
 		TigMet:                tigMet,
@@ -292,6 +324,9 @@ func calculatePromotionEligibility(
 		BilletMet:             billetMet,
 		DetectedBillet:        detected,
 		RequiredBillets:       req.Billets,
+		MosMet:                mosMet,
+		DetectedMos:           strings.TrimSpace(mos),
+		RequiredMos:           req.MosCodes,
 		TigDays:               tigDays,
 		TisDays:               tisDays,
 		TigRequired:           tigRequired,

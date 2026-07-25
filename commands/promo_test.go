@@ -64,14 +64,15 @@ func TestRunPromoHappyPath(t *testing.T) {
 		"1": promoLiteProfile("Ready.R", "PVT", "101"),
 		// Not eligible: PVT short on TIG.
 		"2": promoLiteProfile("Fresh.F", "PVT", "102"),
-		// Skipped cheaply: no ladder for COL, no profile fetch attempted.
-		"3": promoLiteProfile("Topout.T", "COL", "103"),
+		// Skipped cheaply: no ladder for SGM, no profile fetch attempted.
+		"3": promoLiteProfile("Topout.T", "SGM", "103"),
 	}}
 	profiles := map[string]utils.ProfileResponse{
 		"Ready.R": promoFullProfile("Ready.R", "PVT", "2026-04-01", "2026-04-01", "Rifleman 1/1/1/A"),
 		"Fresh.F": promoFullProfile("Fresh.F", "PVT", "2026-05-10", "2026-05-10", "Rifleman 1/1/1/A"),
 		// Deliberately no profile for Topout.T — a fetch would 404 and turn
-		// into a skip, so a clean output also proves the cheap pre-filter.
+		// into a skip, so a clean output also proves the cheap pre-filter (SGM
+		// has no ladder and §VII is unavailable this run).
 	}
 	serveRosterAndProfiles(t, roster, 200, profiles)
 

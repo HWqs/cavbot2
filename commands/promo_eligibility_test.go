@@ -161,6 +161,7 @@ func TestCalculatePromotionEligibility(t *testing.T) {
 		joinDate      string
 		courses       courseCompletions
 		position      string
+		mos           string
 		wantEligible  bool
 		wantNoReq     bool
 		wantNext      string
@@ -269,9 +270,24 @@ func TestCalculatePromotionEligibility(t *testing.T) {
 			position: "Commanding Officer ACD", wantEligible: true, wantNext: "MAJ",
 		},
 		{
-			name: "COL has no ladder",
+			name: "COL without a regiment-HQ MOS is not eligible for BG",
 			rank: "COL", promotionDate: "2020-01-01", joinDate: "2015-01-01",
-			position: "Regimental Commander", wantEligible: false, wantNoReq: true, wantNext: "--",
+			position: "Regimental Commander", mos: "11A", wantEligible: false, wantNext: "BG",
+			check: func(t *testing.T, v promoEligibility) {
+				if v.MosMet {
+					t.Error("MosMet = true, want false (11A is not a regiment-HQ MOS)")
+				}
+			},
+		},
+		{
+			name: "COL with a regiment-HQ MOS is eligible for BG",
+			rank: "COL", promotionDate: "2020-01-01", joinDate: "2015-01-01",
+			position: "Regimental Commander", mos: "00B", wantEligible: true, wantNext: "BG",
+			check: func(t *testing.T, v promoEligibility) {
+				if !v.MosMet {
+					t.Error("MosMet = false, want true (00B is a regiment-HQ MOS)")
+				}
+			},
 		},
 		{
 			name: "missing promotion date never eligible",
@@ -291,7 +307,7 @@ func TestCalculatePromotionEligibility(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			v := calculatePromotionEligibility(tc.rank, tc.promotionDate, tc.joinDate, tc.courses, tc.position, promoRefDate)
+			v := calculatePromotionEligibility(tc.rank, tc.promotionDate, tc.joinDate, tc.courses, tc.position, tc.mos, promoRefDate)
 			if v.Eligible != tc.wantEligible {
 				t.Errorf("Eligible = %v, want %v (verdict %+v)", v.Eligible, tc.wantEligible, v)
 			}
@@ -312,11 +328,11 @@ func TestCalculatePromotionEligibility(t *testing.T) {
 // short on TIG today becomes eligible when asOf moves past the gate.
 func TestEligibilityAsOfDateShifts(t *testing.T) {
 	// Promoted 2026-04-25: 20d TIG at ref date, needs 30d.
-	now := calculatePromotionEligibility("PVT", "2026-04-25", "2026-04-25", courseCompletions{}, "Rifleman", promoRefDate)
+	now := calculatePromotionEligibility("PVT", "2026-04-25", "2026-04-25", courseCompletions{}, "Rifleman", "", promoRefDate)
 	if now.Eligible {
 		t.Fatal("expected not eligible at ref date")
 	}
-	future := calculatePromotionEligibility("PVT", "2026-04-25", "2026-04-25", courseCompletions{}, "Rifleman", mustParseDate("2026-05-25"))
+	future := calculatePromotionEligibility("PVT", "2026-04-25", "2026-04-25", courseCompletions{}, "Rifleman", "", mustParseDate("2026-05-25"))
 	if !future.Eligible {
 		t.Fatal("expected eligible when asOf is past the TIG gate")
 	}

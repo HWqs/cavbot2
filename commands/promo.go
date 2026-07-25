@@ -473,6 +473,7 @@ func evaluatePromoMember(
 		fullProfile.JoinDate,
 		courses,
 		fullProfile.Primary.PositionTitle,
+		fullProfile.Mos,
 		asOf,
 	)
 
@@ -795,6 +796,7 @@ func runPromoUser(r utils.InteractionResponder, i *discordgo.InteractionCreate, 
 		profile.JoinDate,
 		parseCourseCompletions(profile.Records),
 		profile.Primary.PositionTitle,
+		profile.Mos,
 		asOf,
 	)
 
@@ -823,10 +825,11 @@ func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, 
 	if v.NoRequirements {
 		if _, known := promoRankSeniority[strings.ToUpper(profile.Rank.RankShort)]; known {
 			// Recognized ranks with no TIG/TIS ladder entry (1SG, CSM, SGM,
-			// COL, general officers). Several of these still advance — but by
-			// billet, not by a time-based ladder (e.g. 1SG→SGM/CSM into a Bn/
-			// Regt HQ senior-enlisted seat; COL→BG on taking Regt command).
-			// State that neutrally rather than claiming "topped out".
+			// general officers). Several still advance — but by taking a
+			// different billet, not by a time-based ladder (e.g. 1SG→SGM/CSM
+			// into a Bn/Regt HQ senior-enlisted seat). COL is NOT here: it has
+			// a ladder entry gated on the regiment-HQ MOS. State it neutrally
+			// rather than claiming "topped out".
 			fmt.Fprintf(&b, "Standard ladder: no standard TIG/TIS ladder for %s — any advancement is billet-based and handled by S1 (see 7CAV-R-023).\n", profile.Rank.RankShort)
 		} else {
 			b.WriteString("Standard ladder: no standard promotion ladder for this rank.\n")
@@ -856,6 +859,13 @@ func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, 
 				detected = "none detected"
 			}
 			fmt.Fprintf(&b, "%s Billet: %s (needs %s)\n", checkmark(v.BilletMet), detected, strings.Join(v.RequiredBillets, "/"))
+		}
+		if len(v.RequiredMos) > 0 {
+			detected := v.DetectedMos
+			if detected == "" {
+				detected = "none listed"
+			}
+			fmt.Fprintf(&b, "%s MOS: %s (needs %s — regiment HQ)\n", checkmark(v.MosMet), detected, strings.Join(v.RequiredMos, "/"))
 		}
 		if !v.Eligible && v.DaysUntilEligible > 0 {
 			fmt.Fprintf(&b, "⏳ ~%d day(s) until time requirements met.\n", v.DaysUntilEligible)

@@ -102,12 +102,18 @@ func standardPathPossible(member utils.LiteProfileResponse, asOf time.Time) bool
 	if member.PromotionDate == "" || member.JoinDate == "" || member.Primary.PositionTitle == "" {
 		return true
 	}
+	// The lite roster carries no MOS, so a MOS-gated step (COL→BG) can't be
+	// judged here — always fetch to check.
+	if len(promotionRequirements[member.Rank.RankShort].MosCodes) > 0 {
+		return true
+	}
 	return calculatePromotionEligibility(
 		member.Rank.RankShort,
 		member.PromotionDate,
 		member.JoinDate,
 		promoAllCourses,
 		member.Primary.PositionTitle,
+		"", // MOS unknown from lite data; ranks needing it are handled above
 		asOf,
 	).Eligible
 }
