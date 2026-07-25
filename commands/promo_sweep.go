@@ -162,12 +162,11 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 			)
 			msg.Content = fmt.Sprintf("⚠️ Promotion sweep: the %s roster came back empty — this shouldn't happen for a configured position. The issue has been reported.", position)
 		} else {
-			// Same rule as the slash command: a list that fits posts inline;
-			// anything longer posts a clean summary and rides the full detail
-			// as attached CSV + HTML reports (no partial-list preview).
+			// Same rule as the slash command: the post keeps the inline list
+			// (and its "…and N more" notice), and anything longer rides the
+			// full detail as attached CSV + HTML reports.
 			body, omitted := formatPromoMessage(position, "", asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
 			if omitted > 0 {
-				body = formatPromoSummary(position, "", asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
 				msg.Files = []*discordgo.File{
 					promoCSVFile(position, "", asOf, scan),
 					promoReportFile(position, "", asOf, scan),

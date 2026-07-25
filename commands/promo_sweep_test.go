@@ -137,11 +137,11 @@ func TestRunPromoSweepAttachesReportForLongLists(t *testing.T) {
 	if !strings.Contains(sender.bodies[0], "Weekly promotion sweep") {
 		t.Errorf("sweep header missing: %q", sender.bodies[0])
 	}
-	if !strings.Contains(sender.bodies[0], "Full list in the attached CSV and HTML report") {
-		t.Errorf("summary pointer missing: %q", sender.bodies[0])
+	if !strings.Contains(sender.bodies[0], "more — full list in the attached report") {
+		t.Errorf("overflow notice missing: %q", sender.bodies[0])
 	}
-	if strings.Contains(sender.bodies[0], "Member.000") {
-		t.Errorf("summary should not inline candidates: %q", sender.bodies[0])
+	if !strings.Contains(sender.bodies[0], "Member.000") {
+		t.Errorf("inline list should show the first candidates: %q", sender.bodies[0])
 	}
 	if len(sender.files) != 1 || len(sender.files[0]) != 2 {
 		t.Fatalf("expected CSV + HTML attachments, got %+v", sender.files)

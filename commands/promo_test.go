@@ -348,13 +348,14 @@ func TestRunPromoLongListAttachesReport(t *testing.T) {
 	if len(content) >= 2000 {
 		t.Errorf("message length %d exceeds Discord limit", len(content))
 	}
-	if !strings.Contains(content, "Full list in the attached CSV and HTML report") {
-		t.Errorf("summary pointer missing: %q", content)
+	// The message keeps the inline list and the "…and N more" overflow notice.
+	if !strings.Contains(content, "more — full list in the attached report") {
+		t.Errorf("overflow notice missing: %q", content)
 	}
-	// The clean summary must NOT dump a partial candidate list.
-	if strings.Contains(content, "Member.000") {
-		t.Errorf("summary should not inline any candidates: %q", content)
+	if !strings.Contains(content, "Member.000") {
+		t.Errorf("inline list should show the first candidates: %q", content)
 	}
+	// The full detail is still attached as both CSV and HTML.
 	csvBody, htmlBody := lastAttachments(t, f)
 	for i := 0; i < 60; i++ {
 		who := fmt.Sprintf("Member.%03d", i)
@@ -365,8 +366,8 @@ func TestRunPromoLongListAttachesReport(t *testing.T) {
 			t.Fatalf("candidate %s missing from CSV report", who)
 		}
 	}
-	if !strings.Contains(csvBody, "username,current_rank,next_rank") {
-		t.Errorf("CSV header missing: %q", csvBody[:min(120, len(csvBody))])
+	if !strings.Contains(csvBody, "username,current_rank,primary_billet") {
+		t.Errorf("CSV header missing billet column: %q", csvBody[:min(120, len(csvBody))])
 	}
 }
 
@@ -1011,13 +1012,14 @@ func TestRunPromoForceFileOutput(t *testing.T) {
 	if !strings.Contains(csvBody, "Ready.R") || !strings.Contains(csvBody, "Vet.V") {
 		t.Errorf("CSV report missing candidates: %q", csvBody)
 	}
-	// A short list forced to file shows the clean summary, not an inline list.
+	// A short list forced to file still renders the inline list too.
 	content := lastEditContent(f.Calls())
-	if !strings.Contains(content, "Full list in the attached CSV and HTML report") {
-		t.Errorf("forced file should show the summary pointer: %q", content)
+	if !strings.Contains(content, "Ready.R") {
+		t.Errorf("forced file should still show the inline list: %q", content)
 	}
-	if strings.Contains(content, "Ready.R") {
-		t.Errorf("forced file summary should not inline candidates: %q", content)
+	// Primary billet now appears in both reports.
+	if !strings.Contains(csvBody, "primary_billet") || !strings.Contains(htmlBody, "Billet") {
+		t.Errorf("billet column missing from reports")
 	}
 }
 

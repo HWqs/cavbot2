@@ -37,7 +37,9 @@ type promoCandidate struct {
 	Username  string
 	MilpacURL string
 	RankShort string
-	Verdict   promoEligibility
+	// Primary is the trooper's primary billet (milpac position title).
+	Primary string
+	Verdict promoEligibility
 	// Vii is non-nil when the §VII path was evaluated; ViaVII marks a
 	// candidate eligible through §VII (standard gates may be unmet).
 	Vii    *viiResult
@@ -305,11 +307,9 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 	attach := forceFile || omitted > 0
 	edit := &discordgo.WebhookEdit{Content: &message}
 	if attach {
-		// When the full list ships as files, replace the inline message with a
-		// clean summary (no partial-list "preview") and attach both a CSV (for
-		// spreadsheets) and an HTML report (for reading with clickable links).
-		summary := formatPromoSummary(scope, promoType, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
-		edit.Content = &summary
+		// The message keeps the inline list (and its "…and N more" notice);
+		// the full detail rides along as both a CSV (for spreadsheets) and an
+		// HTML report (for reading with clickable links).
 		edit.Files = []*discordgo.File{
 			promoCSVFile(scope, promoType, asOf, res),
 			promoReportFile(scope, promoType, asOf, res),
@@ -416,6 +416,7 @@ func evaluatePromoMember(
 		Username:      member.User.Username,
 		MilpacURL:     fmt.Sprintf("https://7cav.us/rosters/profile/%s", milpacID),
 		RankShort:     rankShort,
+		Primary:       fullProfile.Primary.PositionTitle,
 		Verdict:       verdict,
 		Vii:           vii,
 		ViaVII:        viaVII,
@@ -466,26 +467,8 @@ func formatPromoMessage(scope, promoType string, asOf time.Time, candidates []pr
 	return strings.TrimRight(b.String(), "\n"), omitted
 }
 
-// formatPromoSummary is the message shown when the full list goes out as file
-// attachments instead: disclaimer, a one-line count, and a pointer to the
-// attached reports — no inline candidate lines, so the message stays clean
-// rather than dumping a partial "preview" alongside the files.
-func formatPromoSummary(scope, promoType string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) string {
-	var b strings.Builder
-	b.WriteString(promoDisclaimer)
-	b.WriteString("\n\n")
-	if len(candidates) == 0 {
-		b.WriteString(fmt.Sprintf("No %s members eligible for %s as of %s", scopeDisplay(scope), promoPhrase(promoType), promoDate(asOf)))
-	} else {
-		fmt.Fprintf(&b, "**%s members eligible for %s as of %s: %d found.**\nFull list in the attached CSV and HTML report.",
-			upperFirst(scopeDisplay(scope)), promoPhrase(promoType), promoDate(asOf), len(candidates))
-	}
-	b.WriteString(promoFooter(skippedCount, viiActive))
-	return strings.TrimRight(b.String(), "\n")
-}
-
 // promoFooter renders the shared trailing notices (§VII degradation, skipped
-// members) appended to both the inline-list and summary messages.
+// members) appended to the message.
 func promoFooter(skippedCount int, viiActive bool) string {
 	var footer strings.Builder
 	if !viiActive {
@@ -939,7 +922,7 @@ tr:nth-child(even) td{background:#fafafa}
 		"<span class=\"hint\">click a column to sort · <span id=\"shown\"></span></span></div>\n")
 
 	b.WriteString("<table id=\"t\"><thead><tr>" +
-		"<th>Trooper</th><th>Rank</th><th>Next</th><th>Path</th><th>Type</th>" +
+		"<th>Trooper</th><th>Rank</th><th>Billet</th><th>Next</th><th>Path</th><th>Type</th>" +
 		"<th>TIG</th><th>TIS</th><th>Pending</th><th>§VII held</th><th>Lateral</th>" +
 		"</tr></thead><tbody>\n")
 	for _, c := range scan.Candidates {
@@ -954,12 +937,14 @@ tr:nth-child(even) td{background:#fafafa}
 				viiHeld += ")"
 			}
 		}
-		// TIG/TIS carry a data-sort with the raw day count so the columns sort
-		// chronologically rather than by the "3m 15d" display string.
-		fmt.Fprintf(&b, "<tr><td><a href=\"%s\">%s</a></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"+
+		// data-sort carries the raw sort key so a column sorts by meaning, not
+		// display text: Rank by seniority (lower index = more senior), TIG/TIS
+		// by day count rather than the "3m 15d" string.
+		fmt.Fprintf(&b, "<tr><td><a href=\"%s\">%s</a></td><td data-sort=\"%d\">%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"+
 			"<td data-sort=\"%d\">%s</td><td data-sort=\"%d\">%s</td><td>%s</td><td>%s</td><td>%s</td></tr>\n",
 			html.EscapeString(c.MilpacURL), html.EscapeString(c.Username),
-			html.EscapeString(c.RankShort), html.EscapeString(c.Verdict.NextRank),
+			promoRankIndex(c.RankShort), html.EscapeString(c.RankShort),
+			html.EscapeString(c.Primary), html.EscapeString(c.Verdict.NextRank),
 			html.EscapeString(strings.Join(promoCandidatePaths(c), ", ")),
 			html.EscapeString(strings.Join(promoCandidateTypes(c), " & ")),
 			c.Verdict.TigDays, formatDays(c.Verdict.TigDays),
@@ -1042,7 +1027,7 @@ func promoCSVFile(scope, promoType string, asOf time.Time, scan promoScan) *disc
 	var sb strings.Builder
 	w := csv.NewWriter(&sb)
 	_ = w.Write([]string{
-		"username", "current_rank", "next_rank", "path", "type",
+		"username", "current_rank", "primary_billet", "next_rank", "path", "type",
 		"tig_days", "tis_days", "pending_courses", "vii_held", "lateral_target", "milpac_url",
 	})
 	for _, c := range scan.Candidates {
@@ -1058,7 +1043,7 @@ func promoCSVFile(scope, promoType string, asOf time.Time, scan promoScan) *disc
 			}
 		}
 		_ = w.Write([]string{
-			c.Username, c.RankShort, c.Verdict.NextRank,
+			c.Username, c.RankShort, c.Primary, c.Verdict.NextRank,
 			strings.Join(promoCandidatePaths(c), ", "), strings.Join(promoCandidateTypes(c), " & "),
 			fmt.Sprintf("%d", c.Verdict.TigDays), fmt.Sprintf("%d", c.Verdict.TisDays),
 			strings.Join(c.Verdict.PendingDisplayCourses, ";"), viiHeld, c.LateralTarget, c.MilpacURL,
