@@ -33,20 +33,21 @@ A Discord bot built for the 7th Cavalry Gaming Regiment using Go and DiscordGo, 
 
 At <https://discord.com/developers/applications>:
 
-1. **New Application**, then open the **Bot** tab.
-2. **Reset Token** and copy it — this is `DISCORD_TOKEN`. It is only shown once.
-3. On the same tab, enable the **Server Members Intent** under Privileged Gateway
+1. 'New Application', then open the 'Bot' tab.
+2. 'Reset Token' and copy it. This is `DISCORD_TOKEN`. It is only shown once!
+3. On the same tab, enable the 'Server Members Intent' under Privileged Gateway
    Intents. The bot requests `IntentsGuildMembers`; without this the gateway
-   connection fails at startup.
-4. Under **OAuth2 → URL Generator**, select the `bot` and `applications.commands`
-   scopes plus the View Channels, Send Messages, Attach Files and Embed Links
-   permissions, then open the generated URL to invite the bot.
+   connection fails at startup. A guild is a Discord server.
+4. Create (if you don't have one already) a Discord server that will serve as your test environment for the bot.
+5. Under 'OAuth2 -> URL Generator', select the `bot` and `applications.commands`
+   scopes plus the 'View Channels', 'Send Messages', 'Attach Files' and 'Embed Links'
+   permissions, then open the generated URL to invite the bot to your test environment server.
 
 `applications.commands` is what allows slash commands to register.
 
 ### 2. IDs
 
-Enable **Developer Mode** in the Discord client (User Settings → Advanced), then
+Enable 'Developer Mode' in the Discord client ('User Settings' -> 'Advanced'), then
 right-click a server or channel and choose Copy ID.
 
 Commands register per guild, so `GUILD_ID` must be the server you are testing in.
@@ -54,34 +55,23 @@ Guild commands appear immediately.
 
 ### 3. Environment
 
-Copy `.env.example` to `.env` and fill it in.
+Rename `.env.example` to `.env` and fill it in.
 
-**Startup fails without these:**
-
-| Variable | Source |
-|----------|--------|
-| `DISCORD_TOKEN` | Developer Portal → Bot → Reset Token |
-| `GUILD_ID` | Right-click the server → Copy Server ID |
-| `BM_TOKEN` | [BattleMetrics](https://www.battlemetrics.com) → Account → Developers. Only `/s3aar` uses it; any non-empty placeholder works otherwise. |
-
-**Not checked at startup, but required in practice:**
+Startup fails without these:
 
 | Variable | Source |
 |----------|--------|
-| `BEARER` | API token for `api.7cav.us`. Every milpac lookup fails without it, and there is no startup error — check this first when lookups fail. |
+| `DISCORD_TOKEN` | Developer Portal -> Bot -> Reset Token |
+| `GUILD_ID` | Right-click the server -> Copy Server ID |
+| `BM_TOKEN` | [BattleMetrics](https://www.battlemetrics.com) -> Account -> Developers. Only `/s3aar` uses it; any non-empty placeholder works otherwise. |
 
-**Optional:**
+Not checked at startup, but required in practice:
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `LOG_LEVEL` | `default` | Set to `DEBUG` for local work |
-| `FORUM_DB_DSN` | unset | XenForo read-only DSN for the LOA cache. Unset logs a warning and disables LOA. |
-| `LOA_NODE_IDS` | unset | Forum node IDs the LOA cache reads |
-| `SENTRY_DSN` | unset | Error reporting; leave empty locally |
-| `APP_ENV` | `development` | Environment name |
-| `GITHUB_APP_KEY`, `GITHUB_APP_CLIENT_ID` | unset | `/apps_beta_deploy` only |
+| Variable | Source |
+|----------|--------|
+| `BEARER` | API token for `api.7cav.us`. Every api call fails without it, and there is no startup error. Check this if lookups fail. |
 
-When adding a new variable, add it to **both** `.env.example` and the
+When adding a new variable, add it to both `.env.example` and the
 `environment:` block in `docker-compose.yml`. Compose does not pass through
 variables that are not listed, so skipping the second step means the value never
 reaches the container.
