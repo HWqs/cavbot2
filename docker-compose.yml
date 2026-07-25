@@ -16,7 +16,6 @@ services:
       LOA_NODE_IDS: ${LOA_NODE_IDS}
       SENTRY_DSN: ${SENTRY_DSN}
       APP_ENV: ${APP_ENV}
-      PROMO_SWEEP_DISABLED: ${PROMO_SWEEP_DISABLED}
     networks:
       - xenforo_internal
 

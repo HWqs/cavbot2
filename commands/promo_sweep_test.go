@@ -36,31 +36,20 @@ func (f *fakeChannelSender) ChannelMessageSendComplex(channelID string, data *di
 	return &discordgo.Message{}, popErr(&f.errs)
 }
 
-func TestPromoSweepConfigFromEnv(t *testing.T) {
-	// Channel and scope are constants; only the kill switch is environmental.
-	t.Setenv("PROMO_SWEEP_DISABLED", "")
-	cfg := promoSweepConfigFromEnv()
-	if cfg.Disabled {
-		t.Error("sweep should be enabled by default")
-	}
+func TestPromoSweepConfig(t *testing.T) {
+	// Channel, scope, and the kill switch are all constants — nothing is read
+	// from the environment, so a stray variable can't redirect the sweep.
+	t.Setenv("PROMO_SWEEP_CHANNEL_ID", "999")
+	t.Setenv("PROMO_SWEEP_POSITIONS", "S6")
+	cfg := newPromoSweepConfig()
 	if cfg.ChannelID != promoSweepChannelID {
-		t.Errorf("ChannelID = %q, want the constant", cfg.ChannelID)
+		t.Errorf("ChannelID = %q, want the constant to win over the env", cfg.ChannelID)
 	}
 	if len(cfg.Positions) != 1 || cfg.Positions[0] != promoSweepScope {
 		t.Errorf("Positions = %v, want [%s]", cfg.Positions, promoSweepScope)
 	}
-
-	t.Setenv("PROMO_SWEEP_DISABLED", "TRUE")
-	if !promoSweepConfigFromEnv().Disabled {
-		t.Error("PROMO_SWEEP_DISABLED=TRUE should disable (case-insensitive)")
-	}
-
-	// The channel is not overridable from the environment: a stray variable
-	// must not be able to redirect the sweep into another channel.
-	t.Setenv("PROMO_SWEEP_DISABLED", "")
-	t.Setenv("PROMO_SWEEP_CHANNEL_ID", "999")
-	if got := promoSweepConfigFromEnv().ChannelID; got != promoSweepChannelID {
-		t.Errorf("ChannelID = %q, want the constant to win", got)
+	if promoSweepDisabled {
+		t.Error("sweep should be enabled by default (kill switch off)")
 	}
 }
 
@@ -208,7 +197,6 @@ func TestRunPromoSweepSendFailureAborts(t *testing.T) {
 }
 
 func TestRunPromoSweepNowCommand(t *testing.T) {
-	t.Setenv("PROMO_SWEEP_DISABLED", "")
 	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
 		"1": promoLiteProfile("Ready.R", "PVT", "101"),
 	}}

@@ -10,13 +10,12 @@ package commands
 // (a panic in one sweep must not kill the loop — see issue #119 rationale
 // there), a narrow session interface for testability, and a `now` seam.
 //
-// The target channel and swept scopes are compile-time constants, not
-// environment variables. They are tenant-specific 7Cav identifiers, which the
-// bot keeps in code: the joiner report hardcodes its Discord IDs for the same
-// reason, /warden its role name. Environment variables here are reserved for
-// secrets and deployment identity. PROMO_SWEEP_DISABLED is the exception and
-// stays, because a kill switch is operational rather than tenant data and
-// wants to work without a redeploy.
+// The target channel, swept scope, and the kill switch are all compile-time
+// constants, not environment variables — tenant-specific 7Cav config the bot
+// keeps in code, matching the joiner report (hardcoded Discord IDs) and
+// /warden (role name). Environment variables here are reserved for secrets and
+// deployment identity. Disabling the sweep or moving its channel is a code
+// change and redeploy, the same as the joiner report.
 //
 // The /promo_sweep_now command fires the same sweep immediately — the
 // test-guild smoke-test trigger, since waiting for a weekly tick is not a
@@ -25,7 +24,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -42,14 +40,16 @@ const (
 	// ROSTER_TYPE_COMBAT roster, which is what S1 asked for; see the API load
 	// note on promoSweepFilter.
 	promoSweepScope = "activeduty"
+
+	// promoSweepDisabled is the kill switch. Flip to true and redeploy to
+	// silence the weekly sweep.
+	promoSweepDisabled = false
 )
 
 // TODO(S1 follow-up): Monday 09:00 UTC is a placeholder cadence chosen by
 // engineering, not by the consumer. Before this leaves the test guild, ask
 // S1 when and how often they actually want the reminder (weekly vs
-// fortnightly vs monthly, day, and hour) and whether cadence should be
-// env-configurable rather than a compile-time constant. Update
-// PROMO_SWEEP_* docs in .env.example when decided.
+// fortnightly vs monthly, day, and hour) and update this constant.
 var promoSweepFireSchedule = mustWeeklyFireTime(time.Monday, 9, 0)
 
 // promoSweepSession is the Discord REST surface the sweep needs;
@@ -62,27 +62,24 @@ type promoSweepSession interface {
 type promoSweepConfig struct {
 	ChannelID string
 	Positions []string
-	Disabled  bool
 }
 
-// promoSweepConfigFromEnv builds the sweep config. Channel and scope are
-// constants; only the kill switch is read from the environment.
-func promoSweepConfigFromEnv() promoSweepConfig {
+// newPromoSweepConfig builds the sweep config from the compile-time constants.
+func newPromoSweepConfig() promoSweepConfig {
 	return promoSweepConfig{
 		ChannelID: promoSweepChannelID,
 		Positions: []string{promoSweepScope},
-		Disabled:  strings.EqualFold(os.Getenv("PROMO_SWEEP_DISABLED"), "true"),
 	}
 }
 
 // StartPromoSweepScheduler launches the weekly sweep goroutine. Called from
 // main after the gateway opens, alongside StartJoinerReportScheduler.
 func StartPromoSweepScheduler(s *discordgo.Session) {
-	cfg := promoSweepConfigFromEnv()
-	if cfg.Disabled {
-		utils.Info("Promotion sweep scheduler disabled (PROMO_SWEEP_DISABLED)")
+	if promoSweepDisabled {
+		utils.Info("Promotion sweep scheduler disabled (promoSweepDisabled)")
 		return
 	}
+	cfg := newPromoSweepConfig()
 	utils.Info("Starting promotion sweep scheduler",
 		"cadence", "weekly Monday 09:00 UTC",
 		"channel_id", cfg.ChannelID,
@@ -209,7 +206,7 @@ func runPromoSweepNow(r utils.InteractionResponder, sender promoSweepSession, i 
 	username, discordID := interactionUsernameAndID(i)
 	utils.Info("🚀 Starting Promo Sweep (manual)", "command", "PromoSweepNow", "username", username, "discord_id", discordID)
 
-	cfg := promoSweepConfigFromEnv()
+	cfg := newPromoSweepConfig()
 	err := r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
