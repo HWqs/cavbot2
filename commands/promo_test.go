@@ -1001,39 +1001,64 @@ func TestRunPromoDefaultsToActiveDuty(t *testing.T) {
 	}
 }
 
-func TestRunPromoModeValidation(t *testing.T) {
-	// Both position and user → validation error.
-	f := &fakeResponder{}
+// user is a single-trooper check and can't be combined with position/rank.
+func TestRunPromoUserExclusive(t *testing.T) {
+	for _, combineWith := range []string{"position", "rank"} {
+		f := &fakeResponder{}
+		i := promoInteraction("", "")
+		data := i.Data.(discordgo.ApplicationCommandInteractionData)
+		data.Options = []*discordgo.ApplicationCommandInteractionDataOption{
+			{Name: "user", Type: discordgo.ApplicationCommandOptionString, Value: "Someone.S"},
+			{Name: combineWith, Type: discordgo.ApplicationCommandOptionString, Value: "ACD"},
+		}
+		i.Data = data
+		runPromo(f, i, afsmRefDate)
+
+		found := false
+		for _, call := range f.Calls() {
+			if call.Method == "Respond" && call.Response != nil && call.Response.Data != nil &&
+				strings.Contains(call.Response.Data.Content, "don't combine it with") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("user + %s should error, calls: %+v", combineWith, f.Calls())
+		}
+	}
+}
+
+// position and rank combine: position scopes the roster, rank narrows it.
+func TestRunPromoPositionAndRankCombine(t *testing.T) {
+	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
+		"1": promoLiteProfile("Ready.R", "PVT", "101"),
+		"2": promoLiteProfile("Other.O", "PFC", "103"),
+	}}
+	profiles := map[string]utils.ProfileResponse{
+		"Ready.R": promoFullProfile("Ready.R", "PVT", "2026-04-01", "2026-04-01", "Rifleman"),
+		"Other.O": promoFullProfile("Other.O", "PFC", "2026-01-01", "2026-01-01", "Rifleman"),
+	}
+	servePromoAPIWithRanks(t, roster, profiles, viiTestRanks())
+
 	i := promoInteraction("ACD", "")
 	data := i.Data.(discordgo.ApplicationCommandInteractionData)
 	data.Options = append(data.Options, &discordgo.ApplicationCommandInteractionDataOption{
-		Name: "user", Type: discordgo.ApplicationCommandOptionString, Value: "Someone.S",
+		Name: "rank", Type: discordgo.ApplicationCommandOptionString, Value: "PVT",
 	})
 	i.Data = data
-	runPromo(f, i, afsmRefDate)
-	assertPromoModeError(t, f)
 
-	// Position and rank together → same validation error.
-	f = &fakeResponder{}
-	i = promoInteraction("ACD", "")
-	data = i.Data.(discordgo.ApplicationCommandInteractionData)
-	data.Options = append(data.Options, &discordgo.ApplicationCommandInteractionDataOption{
-		Name: "rank", Type: discordgo.ApplicationCommandOptionString, Value: "PFC",
-	})
-	i.Data = data
+	f := &fakeResponder{}
 	runPromo(f, i, afsmRefDate)
-	assertPromoModeError(t, f)
-}
 
-func assertPromoModeError(t *testing.T, f *fakeResponder) {
-	t.Helper()
-	for _, call := range f.Calls() {
-		if call.Method == "Respond" && call.Response != nil && call.Response.Data != nil &&
-			strings.Contains(call.Response.Data.Content, "at most one of") {
-			return
-		}
+	content := lastEditContent(f.Calls())
+	if !strings.Contains(content, "ACD PVT members eligible") {
+		t.Errorf("header should combine position and rank: %q", content)
 	}
-	t.Errorf("expected mode-validation error, calls: %+v", f.Calls())
+	if !strings.Contains(content, "Ready.R") {
+		t.Errorf("PVT in ACD should be listed: %q", content)
+	}
+	if strings.Contains(content, "Other.O") {
+		t.Errorf("PFC must be filtered out by rank:PVT: %q", content)
+	}
 }
 
 func promoUserInteraction(username, asOf string) *discordgo.InteractionCreate {

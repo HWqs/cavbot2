@@ -292,37 +292,32 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 	}
 	utils.Debug("🔍 Processing promo options", "position", position, "user", user, "rank", rank, "type", promoType, "as_of", asOf.Format("2006-01-02"))
 
-	// At most one of position / user / rank selects the mode; Discord can't
-	// express mutually-exclusive options, so validate here. No mode option at
-	// all defaults to the whole Active Duty roster.
-	modes := 0
-	for _, v := range []string{position, user, rank} {
-		if v != "" {
-			modes++
+	// `user` is a single-trooper check and stands alone; `position` and `rank`
+	// combine (position scopes the roster, rank narrows within it). Default to
+	// the whole Active Duty roster when no scope is given.
+	if user != "" {
+		if position != "" || rank != "" {
+			utils.HandleError(r, i, "❌ `user` checks one trooper on its own — don't combine it with `position` or `rank`.")
+			return
 		}
-	}
-	if modes > 1 {
-		utils.HandleError(r, i, "❌ Provide at most one of `position` (scope check), `user` (single-trooper verdict), or `rank` (rank-wide check).")
+		runPromoUser(r, i, user, asOf)
 		return
 	}
 	if promoType != "" && excludeType != "" {
 		utils.HandleError(r, i, "❌ Use either `type` (show only one path) or `exclude` (hide one path), not both.")
 		return
 	}
-	if modes == 0 {
+	if position == "" {
 		position = promoActiveDutyScope
 	}
-	if user != "" {
-		runPromoUser(r, i, user, asOf)
-		return
-	}
+	rank = strings.ToUpper(strings.TrimSpace(rank))
 
-	// Scope label: the position as typed, or the rank in canonical upper-case
-	// form. Prose uses scopeDisplay/promoFilterPhrase; filenames and logs keep
-	// the raw scope (plus a filter tag for logs).
-	scope := position
+	// Scope label: the position, optionally narrowed by a rank (e.g. "ACD PVT",
+	// "active duty PVT"). Prose uses scopeDisplay/promoFilterPhrase; filenames
+	// and logs keep the raw scope (plus a filter tag for logs).
+	scope := scopeDisplay(position)
 	if rank != "" {
-		scope = strings.ToUpper(rank)
+		scope = strings.TrimSpace(scope + " " + rank)
 	}
 	filterTag := promoType
 	if excludeType != "" {
@@ -336,7 +331,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 	err := r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: fmt.Sprintf("Checking %s eligibility for %s as of %s...", promoFilterPhrase(promoType, excludeType), scopeDisplay(scope), promoDate(asOf)),
+			Content: fmt.Sprintf("Checking %s eligibility for %s as of %s...", promoFilterPhrase(promoType, excludeType), scope, promoDate(asOf)),
 		},
 	})
 	if err != nil {
@@ -351,12 +346,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 	defer cancel()
 
 	filter := promoFilter{include: promoType, exclude: excludeType}
-	var res promoScan
-	if rank != "" {
-		res, err = collectPromoCandidatesByRank(ctx, rank, asOf, filter)
-	} else {
-		res, err = collectPromoCandidates(ctx, position, asOf, filter)
-	}
+	res, err := collectPromoCandidates(ctx, position, rank, asOf, filter)
 	if err != nil {
 		utils.CaptureError("❌ Roster fetch failed", err)
 		utils.HandleError(r, i, fmt.Sprintf("❌ Failed to fetch roster: %v", err))
@@ -365,9 +355,12 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 	// Position/rank are user-supplied, so an empty roster is a plausible user
 	// outcome — message only, no Sentry (ADR 0002).
 	if res.EmptyRoster {
-		if rank != "" {
-			utils.HandleError(r, i, fmt.Sprintf("❌ No active-duty troopers hold rank %q — use the milpac short form (e.g. PFC, SGT, CW2).", rank))
-		} else {
+		switch {
+		case rank != "" && !isActiveDutyScope(position):
+			utils.HandleError(r, i, fmt.Sprintf("❌ No %s troopers hold rank %s.", scopeDisplay(position), rank))
+		case rank != "":
+			utils.HandleError(r, i, fmt.Sprintf("❌ No active-duty troopers hold rank %s — use the milpac short form (e.g. PFC, SGT, CW2).", rank))
+		default:
 			utils.HandleError(r, i, emptyRosterSearchMessage(position))
 		}
 		return
@@ -537,12 +530,12 @@ func formatPromoMessage(scope string, filter promoFilter, asOf time.Time, candid
 	b.WriteString("\n\n")
 
 	if len(candidates) == 0 {
-		b.WriteString(fmt.Sprintf("No %s members eligible for %s as of %s", scopeDisplay(scope), filter.phrase(), promoDate(asOf)))
+		b.WriteString(fmt.Sprintf("No %s members eligible for %s as of %s", scope, filter.phrase(), promoDate(asOf)))
 		b.WriteString(footer)
 		return strings.TrimRight(b.String(), "\n"), 0
 	}
 
-	b.WriteString(fmt.Sprintf("**%s members eligible for %s as of %s:**\n", upperFirst(scopeDisplay(scope)), filter.phrase(), promoDate(asOf)))
+	b.WriteString(fmt.Sprintf("**%s members eligible for %s as of %s:**\n", upperFirst(scope), filter.phrase(), promoDate(asOf)))
 
 	// Reserve room for the footer and a worst-case overflow notice so the
 	// message cannot be pushed over the limit by what gets appended after
@@ -669,45 +662,27 @@ func resolvePositionRoster(ctx context.Context, position string) (*utils.LiteRos
 	return utils.GetRosterByFuzzyPositionSearch(ctx, position)
 }
 
-func collectPromoCandidates(ctx context.Context, position string, asOf time.Time, filter promoFilter) (promoScan, error) {
+// collectPromoCandidates runs the eligibility pass for a position scope,
+// optionally narrowed to a single rank (case-insensitive milpac short form).
+// position + rank combine: position scopes the roster, rank filters within it.
+func collectPromoCandidates(ctx context.Context, position, rank string, asOf time.Time, filter promoFilter) (promoScan, error) {
 	roster, err := resolvePositionRoster(ctx, position)
 	if err != nil {
 		return promoScan{}, err
 	}
-	utils.Info("📋 Retrieved roster", "member_count", len(roster.LiteProfiles), "position", position)
-
-	if len(roster.LiteProfiles) == 0 {
-		return promoScan{EmptyRoster: true}, nil
-	}
 
 	members := make([]utils.LiteProfileResponse, 0, len(roster.LiteProfiles))
 	for _, member := range roster.LiteProfiles {
-		members = append(members, member)
-	}
-	return evaluatePromoRoster(ctx, members, position, asOf, filter), nil
-}
-
-// collectPromoCandidatesByRank runs the eligibility pass for every Active
-// Duty trooper currently holding rankShort (case-insensitive milpac short
-// form, e.g. "PFC").
-func collectPromoCandidatesByRank(ctx context.Context, rankShort string, asOf time.Time, filter promoFilter) (promoScan, error) {
-	roster, err := utils.GetLiteRoster(ctx, "ROSTER_TYPE_COMBAT")
-	if err != nil {
-		return promoScan{}, err
-	}
-
-	members := make([]utils.LiteProfileResponse, 0)
-	for _, member := range roster.LiteProfiles {
-		if strings.EqualFold(member.Rank.RankShort, rankShort) {
+		if rank == "" || strings.EqualFold(member.Rank.RankShort, rank) {
 			members = append(members, member)
 		}
 	}
-	utils.Info("📋 Retrieved roster", "member_count", len(members), "rank", rankShort)
+	utils.Info("📋 Retrieved roster", "member_count", len(members), "position", position, "rank", rank)
 
 	if len(members) == 0 {
 		return promoScan{EmptyRoster: true}, nil
 	}
-	return evaluatePromoRoster(ctx, members, "rank:"+rankShort, asOf, filter), nil
+	return evaluatePromoRoster(ctx, members, position, asOf, filter), nil
 }
 
 // evaluatePromoRoster is the scope-independent tail of an eligibility pass:
@@ -984,7 +959,7 @@ func promoCandidateTypes(c promoCandidate) []string {
 // so the file works straight from a Discord download.
 func promoReportFile(scope string, filter promoFilter, asOf time.Time, scan promoScan) *discordgo.File {
 	title := fmt.Sprintf("%s eligibility — %s — %s",
-		upperFirst(filter.phrase()), scopeDisplay(scope), promoDate(asOf))
+		upperFirst(filter.phrase()), scope, promoDate(asOf))
 
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n")
@@ -1111,7 +1086,8 @@ const promoReportScript = `<script>
 
 // promoFileScope makes a scope+type label safe for a filename.
 func promoFileScope(scope string, filter promoFilter) string {
-	fileScope := strings.ReplaceAll(scope, "/", "-")
+	repl := strings.NewReplacer(" ", "-", "/", "-")
+	fileScope := strings.ToLower(repl.Replace(strings.TrimSpace(scope)))
 	if tag := filter.tag(); tag != "" {
 		fileScope += "_" + tag
 	}

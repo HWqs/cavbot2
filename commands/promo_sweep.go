@@ -146,11 +146,12 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 	defer cancel()
 
 	for _, position := range cfg.Positions {
-		scan, err := collectPromoCandidates(ctx, position, asOf, promoFilter{})
+		scan, err := collectPromoCandidates(ctx, position, "", asOf, promoFilter{})
 		if err != nil {
 			utils.CaptureError("Promotion sweep position pass failed", err, "position", position)
 			continue
 		}
+		scopeLabel := scopeDisplay(position)
 		msg := &discordgo.MessageSend{}
 		if scan.EmptyRoster {
 			// A configured (fixed-input) position returning empty is
@@ -165,11 +166,11 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 			// Same rule as the slash command: the post keeps the inline list
 			// (and its "…and N more" notice), and anything longer rides the
 			// full detail as attached CSV + HTML reports.
-			body, omitted := formatPromoMessage(position, promoFilter{}, asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
+			body, omitted := formatPromoMessage(scopeLabel, promoFilter{}, asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
 			if omitted > 0 {
 				msg.Files = []*discordgo.File{
-					promoCSVFile(position, promoFilter{}, asOf, scan),
-					promoReportFile(position, promoFilter{}, asOf, scan),
+					promoCSVFile(scopeLabel, promoFilter{}, asOf, scan),
+					promoReportFile(scopeLabel, promoFilter{}, asOf, scan),
 				}
 			}
 			msg.Content = "📋 **Weekly promotion sweep**\n" + body

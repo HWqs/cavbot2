@@ -293,7 +293,7 @@ func TestCollectPromoCandidatesActiveDutyScope(t *testing.T) {
 	// Canonical spelling and the legacy hyphenated one must both route to the
 	// combat roster.
 	for _, scopeSpelling := range []string{"activeduty", "Active-Duty"} {
-		scan, err := collectPromoCandidates(t.Context(), scopeSpelling, afsmRefDate, promoFilter{})
+		scan, err := collectPromoCandidates(t.Context(), scopeSpelling, "", afsmRefDate, promoFilter{})
 		if err != nil {
 			t.Fatalf("collectPromoCandidates(%q): %v", scopeSpelling, err)
 		}
