@@ -185,17 +185,17 @@ func Promo() Command {
 }
 
 func handlePromoCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	runPromo(utils.NewSessionResponder(s), i, time.Now().UTC())
+	runPromo(utils.NewSessionResponder(s), i, time.Now())
 }
 
-// runPromo is the testable core; nowUTC pins "today" for tests.
-func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, nowUTC time.Time) {
+// runPromo is the testable core; now pins "today" for tests.
+func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now time.Time) {
 	username, discordID := interactionUsernameAndID(i)
 	utils.Info("🚀 Starting Promo Check", "command", "Promo", "username", username, "discord_id", discordID)
 
 	position, user, rank, promoType := "", "", "", ""
 	exportCSV := false
-	asOf := nowUTC
+	asOf := now
 	for _, opt := range i.ApplicationCommandData().Options {
 		switch opt.Name {
 		case "position":

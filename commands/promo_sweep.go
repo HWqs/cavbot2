@@ -120,8 +120,10 @@ func runPromoSweepSchedulerLoop(s promoSweepSession, cfg promoSweepConfig, now f
 	}
 }
 
-// nextPromoSweepFire returns the next scheduled fire strictly after now
-// (strict-after avoids a double-fire at exact-boundary starts).
+// nextPromoSweepFire returns the next scheduled fire strictly after now.
+// The schedule is UTC-anchored regardless of the host's timezone, matching
+// the joiner report scheduler; only the caller's clock is local. Strict
+// "after" avoids a double-fire at exact-boundary starts.
 func nextPromoSweepFire(now time.Time) time.Time {
 	n := now.UTC()
 	candidate := time.Date(n.Year(), n.Month(), n.Day(),
@@ -200,12 +202,12 @@ func PromoSweepNow() Command {
 }
 
 func handlePromoSweepNow(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	runPromoSweepNow(utils.NewSessionResponder(s), s, i, time.Now().UTC())
+	runPromoSweepNow(utils.NewSessionResponder(s), s, i, time.Now())
 }
 
 // runPromoSweepNow is the testable core; sender is the channel-send surface
 // (the live session in production, a fake in tests).
-func runPromoSweepNow(r utils.InteractionResponder, sender promoSweepSession, i *discordgo.InteractionCreate, nowUTC time.Time) {
+func runPromoSweepNow(r utils.InteractionResponder, sender promoSweepSession, i *discordgo.InteractionCreate, now time.Time) {
 	username, discordID := interactionUsernameAndID(i)
 	utils.Info("🚀 Starting Promo Sweep (manual)", "command", "PromoSweepNow", "username", username, "discord_id", discordID)
 
@@ -223,7 +225,7 @@ func runPromoSweepNow(r utils.InteractionResponder, sender promoSweepSession, i 
 		return
 	}
 
-	if err := runPromoSweep(sender, cfg, nowUTC); err != nil {
+	if err := runPromoSweep(sender, cfg, now); err != nil {
 		utils.CaptureError("Manual promotion sweep failed", err)
 		msg := fmt.Sprintf("❌ Sweep failed: %v", err)
 		if editErr := r.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg}); editErr != nil {
