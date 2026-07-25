@@ -48,8 +48,8 @@ func TestPromoSweepConfigFromEnv(t *testing.T) {
 	if cfg.ChannelID != defaultPromoSweepChannelID {
 		t.Errorf("ChannelID = %q, want default", cfg.ChannelID)
 	}
-	if len(cfg.Positions) != 1 || cfg.Positions[0] != "ACD" {
-		t.Errorf("Positions = %v, want [ACD]", cfg.Positions)
+	if len(cfg.Positions) != 1 || cfg.Positions[0] != "activeduty" {
+		t.Errorf("Positions = %v, want [activeduty]", cfg.Positions)
 	}
 
 	t.Setenv("PROMO_SWEEP_CHANNEL_ID", "42")

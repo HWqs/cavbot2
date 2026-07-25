@@ -39,7 +39,7 @@ import (
 
 const (
 	defaultPromoSweepChannelID = "1529633362275471531"
-	defaultPromoSweepPositions = "ACD"
+	defaultPromoSweepPositions = "activeduty"
 )
 
 // TODO(S1 follow-up): Monday 09:00 UTC is a placeholder cadence chosen by
