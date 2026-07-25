@@ -840,7 +840,11 @@ func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, 
 			status = "eligible"
 		}
 		fmt.Fprintf(&b, "Standard ladder: **%s for %s** (%s)\n", status, v.NextRank, v.Type)
-		fmt.Fprintf(&b, "%s TIG %s (need %s)\n", checkmark(v.TigMet), formatDays(v.TigDays), formatDays(v.TigRequired))
+		if v.TigRequired == 0 {
+			fmt.Fprintf(&b, "%s TIG %s (eligibility is not determined by TIG)\n", checkmark(v.TigMet), formatDays(v.TigDays))
+		} else {
+			fmt.Fprintf(&b, "%s TIG %s (need %s)\n", checkmark(v.TigMet), formatDays(v.TigDays), formatDays(v.TigRequired))
+		}
 		if v.TisRequired > 0 {
 			fmt.Fprintf(&b, "%s TIS %s (need %s)\n", checkmark(v.TisMet), formatDays(v.TisDays), formatDays(v.TisRequired))
 		}
