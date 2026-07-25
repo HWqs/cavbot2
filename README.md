@@ -22,6 +22,9 @@ A Discord bot built for the 7th Cavalry Gaming Regiment using Go and DiscordGo, 
 | `/loa` | Active and upcoming LOAs for a position |
 | `/afsm` | Members eligible for the AFSM in a department |
 | `/s3aar` | Attendance list for events and operations |
+| `/promo` | Tools to gauge promotion eligibility across the regiment |
+| `/billetaudit` | Several audit tools to flag discrepancies in MILPAC |
+| `/apps_beta_deploy` | Deploy the Apps beta version |
 | `/s6-it-check` | S6 IT members eligible for full status |
 | `/warden` | Warden role management |
 | `/warden-bulkadd-internal` | Add a validated unit roster to Verified Warden Internal |
