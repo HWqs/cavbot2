@@ -160,6 +160,40 @@ func TestAuditBilletRecords(t *testing.T) {
 	}
 }
 
+func TestAuditMosVsBillet(t *testing.T) {
+	mosProfile := func(mos, position string) *utils.ProfileResponse {
+		return &utils.ProfileResponse{
+			User:    utils.User{Username: "Test.T"},
+			Mos:     mos,
+			Primary: utils.Position{PositionTitle: position},
+		}
+	}
+	cases := []struct {
+		name     string
+		mos      string
+		position string
+		wantFlag bool
+	}{
+		{"infantry MOS on aviation billet flags", "11B", "Rotary Wing Pilot 1/A/1-7 AVN", true},
+		{"aviation MOS on aviation billet is clean", "153A", "Rotary Wing Pilot 1/A/1-7 AVN", false},
+		{"S6 MOS on S2 billet flags", "25U", "S2 Investigator", true},
+		{"S6 MOS on S6 billet is clean", "25A", "S6 Officer 1IC", false},
+		{"infantry MOS on a plain line billet is not flagged", "11B", "Rifleman 1/1/1/A", false},
+		{"general-staff MOS is never flagged (cross-cutting)", "00B", "S6 Clerk", false},
+		{"medic MOS on medical billet is clean", "68W", "Combat Medic 1/1/A", false},
+		{"S3 MOS on medical billet flags", "57A", "Combat Medic 1/1/A", true},
+		{"unknown MOS is not flagged", "ZZ9", "S6 Clerk", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			note := auditMosVsBillet(mosProfile(tc.mos, tc.position))
+			if (note != "") != tc.wantFlag {
+				t.Errorf("auditMosVsBillet(%s, %q) = %q, wantFlag=%v", tc.mos, tc.position, note, tc.wantFlag)
+			}
+		})
+	}
+}
+
 func billetAuditInteraction(position, user string) *discordgo.InteractionCreate {
 	var opts []*discordgo.ApplicationCommandInteractionDataOption
 	if position != "" {

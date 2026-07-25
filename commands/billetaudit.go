@@ -21,6 +21,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"html"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,7 @@ const (
 	billetCatAmbiguousTransfer = "ambiguous transfer"
 	billetCatOrphanRelief      = "relief without assignment"
 	billetCatMissingRecord     = "unrecorded current billet"
+	billetCatMosMismatch       = "mos/billet mismatch"
 )
 
 // billetFinding is one flagged ambiguity in a member's record stream.
@@ -276,7 +278,7 @@ func formatBilletAuditSummary(scope string, rows []billetRow, flaggedMembers, me
 	for _, row := range rows {
 		counts[row.Category]++
 	}
-	for _, cat := range []string{billetCatAmbiguousTransfer, billetCatMissingRecord, billetCatOrphanRelief} {
+	for _, cat := range []string{billetCatAmbiguousTransfer, billetCatMissingRecord, billetCatMosMismatch, billetCatOrphanRelief} {
 		if counts[cat] > 0 {
 			fmt.Fprintf(&b, "• %s: %d\n", cat, counts[cat])
 		}
@@ -376,6 +378,93 @@ func deptOf(role string) string {
 		return ""
 	}
 	return strings.ToUpper(fields[0])
+}
+
+// mosCategory maps a milpac MOS code to the branch/department it denotes, per
+// the 7Cav MOS table. Cross-cutting codes — general staff (00B/00Z/01A/00D),
+// RDC (50A) and FCC (49A), whose holders legitimately sit across departments —
+// are deliberately omitted, so a MOS/billet comparison there is never flagged.
+var mosCategory = map[string]string{
+	// combat branches
+	"11A": "infantry", "11B": "infantry", "11C": "infantry",
+	"19A": "armor", "19C": "armor", "19D": "armor", "19K": "armor",
+	"12A": "engineer", "12B": "engineer",
+	"13A": "artillery", "13B": "artillery",
+	"15A": "aviation", "153A": "aviation", "155A": "aviation", "155F": "aviation", "15T": "aviation",
+	"67A": "medical", "68W": "medical",
+	"09B": "recruit",
+	// departments
+	"42A": "S1", "42B": "S1",
+	"35F": "S2", "35A": "S2",
+	"57B": "S3", "57A": "S3",
+	"46S": "S5", "46A": "S5",
+	"25U": "S6", "25A": "S6", "255N": "S6",
+	"47U": "S7", "47A": "S7",
+	"31B": "MP", "31A": "MP",
+	"27D": "JAG", "27A": "JAG",
+	"79R": "RRD", "79A": "RRD",
+	"79X": "RTC", "79Z": "RTC",
+	"26B": "WAG", "26Z": "WAG",
+	"47T": "NCOA", "47C": "NCOA",
+	"47Q": "ODS",
+	"51A": "DEVCOM", "51S": "DEVCOM",
+}
+
+var (
+	mosAvnBilletRe = regexp.MustCompile(`(?i)\bpilot\b|aviator|aircrew|crew ?chief|rotary|fixed.?wing|door gunner`)
+	mosMedBilletRe = regexp.MustCompile(`(?i)\bmedic\b|\bmedical\b|surgeon|corpsman`)
+)
+
+// billetImpliedCategory returns the branch/department a primary billet clearly
+// implies, or "" when it can't be told confidently. Only the reliably
+// separable categories are returned (aviation/medical by keyword, the staff
+// departments by their leading code) — a plain line billet ("Rifleman 1/1/A")
+// yields "", so it never triggers a mismatch.
+func billetImpliedCategory(positionTitle string) string {
+	role := normalizeRole(positionTitle)
+	if role == "" {
+		return ""
+	}
+	switch {
+	case mosAvnBilletRe.MatchString(role):
+		return "aviation"
+	case mosMedBilletRe.MatchString(role):
+		return "medical"
+	}
+	switch deptOf(role) {
+	case "S1", "S2", "S3", "S5", "S6", "S7", "MP", "JAG", "RRD", "RTC", "WAG", "NCOA", "DEVCOM", "ODS":
+		return deptOf(role)
+	}
+	return ""
+}
+
+// mosCode extracts the leading MOS code token from the milpac MOS field
+// ("11B", "153A", or "11B Infantryman" → "11B"), upper-cased.
+func mosCode(mos string) string {
+	fields := strings.Fields(mos)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.ToUpper(fields[0])
+}
+
+// auditMosVsBillet flags a trooper whose MOS denotes one branch/department
+// while their primary billet clearly implies a different one — e.g. an 11B
+// (infantry) MOS on an aviation billet, or an S6 MOS on an S2 billet. Returns
+// "" when either side is unknown or they agree. Conservative by design: the
+// billet side only speaks up for categories it can pin, so ordinary line
+// troopers are never flagged.
+func auditMosVsBillet(profile *utils.ProfileResponse) string {
+	mosCat := mosCategory[mosCode(profile.Mos)]
+	if mosCat == "" {
+		return "" // unknown or cross-cutting MOS
+	}
+	billetCat := billetImpliedCategory(profile.Primary.PositionTitle)
+	if billetCat == "" || strings.EqualFold(billetCat, mosCat) {
+		return ""
+	}
+	return fmt.Sprintf("MOS %s (%s) but primary billet %q looks like %s — MOS may be out of date; verify.",
+		mosCode(profile.Mos), mosCat, normalizeRole(profile.Primary.PositionTitle), billetCat)
 }
 
 // auditBilletRecords walks one member's records (same parsers as the §VII
@@ -493,6 +582,12 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 	if cur != "" && detectBillet(cur) != "" && !assignedRoles[strings.ToLower(cur)] {
 		findings = append(findings, billetFinding{Category: billetCatMissingRecord, Note: fmt.Sprintf(
 			"current billet %q has no matching assignment record — records incomplete?", cur)})
+	}
+
+	// MOS vs primary billet: the MOS should match the branch/department the
+	// billet sits in.
+	if note := auditMosVsBillet(profile); note != "" {
+		findings = append(findings, billetFinding{Category: billetCatMosMismatch, Note: note})
 	}
 	return findings
 }
