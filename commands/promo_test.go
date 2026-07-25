@@ -136,6 +136,62 @@ func TestParsePromoDate(t *testing.T) {
 	}
 }
 
+// §VII is always discretionary; a candidate eligible via standard-automatic
+// AND §VII reads "automatic & discretionary" with paths "standard, §VII".
+func TestPromoCandidateTypesAndPaths(t *testing.T) {
+	rk := &viiRank{Short: "SGT"}
+	cases := []struct {
+		name      string
+		c         promoCandidate
+		wantTypes string
+		wantPaths string
+	}{
+		{
+			"automatic standard only",
+			promoCandidate{Verdict: promoEligibility{Eligible: true, Type: "automatic"}},
+			"automatic", "standard",
+		},
+		{
+			"standard automatic + §VII → automatic & discretionary",
+			promoCandidate{Verdict: promoEligibility{Eligible: true, Type: "automatic"}, ViaVII: true, Vii: &viiResult{Target: rk}},
+			"automatic & discretionary", "standard, §VII",
+		},
+		{
+			"§VII only is discretionary",
+			promoCandidate{Verdict: promoEligibility{Eligible: false}, ViaVII: true, Vii: &viiResult{Target: rk}},
+			"discretionary", "§VII",
+		},
+		{
+			"discretionary standard only",
+			promoCandidate{Verdict: promoEligibility{Eligible: true, Type: "discretionary"}},
+			"discretionary", "standard",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := strings.Join(promoCandidateTypes(tc.c), " & "); got != tc.wantTypes {
+				t.Errorf("types = %q, want %q", got, tc.wantTypes)
+			}
+			if got := strings.Join(promoCandidatePaths(tc.c), ", "); got != tc.wantPaths {
+				t.Errorf("paths = %q, want %q", got, tc.wantPaths)
+			}
+		})
+	}
+}
+
+// A position/unit scope displays upper-cased regardless of input casing;
+// activeduty stays the readable phrase.
+func TestScopeDisplayCasing(t *testing.T) {
+	for in, want := range map[string]string{
+		"acd": "ACD", "Acd": "ACD", "ACD": "ACD", "s1": "S1",
+		"activeduty": "active duty", "active-duty": "active duty",
+	} {
+		if got := scopeDisplay(in); got != want {
+			t.Errorf("scopeDisplay(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestRunPromoInvalidAsOfDate(t *testing.T) {
 	f := &fakeResponder{}
 	runPromo(f, promoInteraction("ACD", "julyish"), afsmRefDate)
@@ -943,7 +999,7 @@ func TestRunPromoForceFileOutput(t *testing.T) {
 	runPromo(f, i, afsmRefDate)
 
 	csvBody, htmlBody := lastAttachments(t, f)
-	if !strings.Contains(htmlBody, "<table>") || !strings.Contains(htmlBody, "eligibility") {
+	if !strings.Contains(htmlBody, "<table") || !strings.Contains(htmlBody, "eligibility") {
 		t.Errorf("HTML report structure missing: %q", htmlBody)
 	}
 	if !strings.Contains(htmlBody, "Ready.R") || !strings.Contains(htmlBody, "Vet.V") {
@@ -978,8 +1034,10 @@ func TestPromoReportEscapesMilpacData(t *testing.T) {
 	if _, err := io.Copy(&sb, file.Reader); err != nil {
 		t.Fatalf("read report: %v", err)
 	}
-	if strings.Contains(sb.String(), "<script>") {
-		t.Errorf("unescaped markup reached the report: %q", sb.String())
+	// The report carries its own sort/filter <script> block; what must never
+	// appear is the injected payload unescaped.
+	if strings.Contains(sb.String(), "<script>alert") {
+		t.Errorf("unescaped injected markup reached the report: %q", sb.String())
 	}
 	if !strings.Contains(sb.String(), "&lt;script&gt;") {
 		t.Errorf("expected escaped markup: %q", sb.String())

@@ -106,12 +106,14 @@ func parsePromoDate(s string) (time.Time, error) {
 }
 
 // scopeDisplay renders a scope label for prose: the activeduty sentinel reads
-// "active duty"; anything else as typed.
+// "active duty"; a position/unit or rank code is upper-cased (ACD, S1, PFC)
+// regardless of how the user typed it, since those are always upper-case in
+// milpac usage.
 func scopeDisplay(scope string) string {
 	if isActiveDutyScope(scope) {
 		return "active duty"
 	}
-	return scope
+	return strings.ToUpper(scope)
 }
 
 // promoPhrase is the "<type> promotion" noun phrase for sentences, e.g.
@@ -852,8 +854,46 @@ func formatDays(days int) string {
 }
 
 // ---------------------------------------------------------------------------
-// CSV export
+// Report export (HTML + CSV)
 // ---------------------------------------------------------------------------
+
+// promoCandidatePaths lists a candidate's eligibility paths, most conventional
+// first: standard, then §VII, then lateral.
+func promoCandidatePaths(c promoCandidate) []string {
+	var paths []string
+	if c.Verdict.Eligible {
+		paths = append(paths, "standard")
+	}
+	if c.ViaVII {
+		paths = append(paths, "§VII")
+	}
+	if c.LateralTarget != "" {
+		paths = append(paths, "lateral")
+	}
+	return paths
+}
+
+// promoCandidateTypes lists the promotion type(s) a candidate qualifies under,
+// automatic first — automatic is always prioritised over the discretionary
+// paths in display. §VII and lateral are ALWAYS discretionary, never
+// automatic, so a standard-automatic candidate who also has a §VII path reads
+// "automatic & discretionary".
+func promoCandidateTypes(c promoCandidate) []string {
+	set := map[string]bool{}
+	if c.Verdict.Eligible {
+		set[c.Verdict.Type] = true // "automatic" or "discretionary"
+	}
+	if c.ViaVII || c.LateralTarget != "" {
+		set["discretionary"] = true
+	}
+	var out []string
+	for _, t := range []string{"automatic", "discretionary"} {
+		if set[t] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
 
 // promoReportFile renders the full candidate list as a standalone HTML
 // report, attached whenever the list outruns one message or the caller asks
@@ -871,10 +911,16 @@ func promoReportFile(scope, promoType string, asOf time.Time, scan promoScan) *d
 	b.WriteString(`<style>
 body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:2rem;color:#1a1a1a}
 h1{font-size:1.25rem;margin:0 0 .25rem}
-p.meta{color:#555;margin:0 0 1.5rem;font-size:.9rem}
+p.meta{color:#555;margin:0 0 1rem;font-size:.9rem}
+.controls{margin:0 0 1rem;font-size:.9rem}
+.controls input{padding:.35rem .5rem;font-size:.9rem;width:16rem;max-width:100%}
+.controls .hint{color:#777;margin-left:.5rem}
 table{border-collapse:collapse;width:100%;font-size:.875rem}
 th,td{border:1px solid #ddd;padding:.4rem .6rem;text-align:left;vertical-align:top}
-th{background:#f4f4f4;position:sticky;top:0}
+th{background:#f4f4f4;position:sticky;top:0;cursor:pointer;user-select:none;white-space:nowrap}
+th:hover{background:#e9e9e9}
+th.sorted-asc::after{content:" \25B2";color:#888}
+th.sorted-desc::after{content:" \25BC";color:#888}
 tr:nth-child(even) td{background:#fafafa}
 .note{margin-top:1.5rem;padding:.75rem;background:#fff8e1;border-left:3px solid #e6a700;font-size:.875rem}
 </style>
@@ -889,19 +935,16 @@ tr:nth-child(even) td{background:#fafafa}
 		b.WriteString(" · §VII check unavailable this run — standard ladder only")
 	}
 	b.WriteString("</p>\n")
+	b.WriteString("<div class=\"controls\"><input id=\"q\" type=\"search\" placeholder=\"Filter (e.g. discretionary, SGT, §VII)…\" autofocus>" +
+		"<span class=\"hint\">click a column to sort · <span id=\"shown\"></span></span></div>\n")
 
-	b.WriteString("<table><thead><tr>" +
+	b.WriteString("<table id=\"t\"><thead><tr>" +
 		"<th>Trooper</th><th>Rank</th><th>Next</th><th>Path</th><th>Type</th>" +
 		"<th>TIG</th><th>TIS</th><th>Pending</th><th>§VII held</th><th>Lateral</th>" +
 		"</tr></thead><tbody>\n")
 	for _, c := range scan.Candidates {
-		var paths []string
-		if c.Verdict.Eligible {
-			paths = append(paths, "standard")
-		}
 		viiHeld := ""
 		if c.ViaVII {
-			paths = append(paths, "§VII")
 			viiHeld = c.Vii.Target.Short
 			if c.Vii.TargetHeldDate != "" {
 				viiHeld += " (held " + c.Vii.TargetHeldDate
@@ -911,20 +954,22 @@ tr:nth-child(even) td{background:#fafafa}
 				viiHeld += ")"
 			}
 		}
-		if c.LateralTarget != "" {
-			paths = append(paths, "lateral")
-		}
+		// TIG/TIS carry a data-sort with the raw day count so the columns sort
+		// chronologically rather than by the "3m 15d" display string.
 		fmt.Fprintf(&b, "<tr><td><a href=\"%s\">%s</a></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"+
-			"<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>\n",
+			"<td data-sort=\"%d\">%s</td><td data-sort=\"%d\">%s</td><td>%s</td><td>%s</td><td>%s</td></tr>\n",
 			html.EscapeString(c.MilpacURL), html.EscapeString(c.Username),
 			html.EscapeString(c.RankShort), html.EscapeString(c.Verdict.NextRank),
-			html.EscapeString(strings.Join(paths, " + ")), html.EscapeString(c.Verdict.Type),
-			formatDays(c.Verdict.TigDays), formatDays(c.Verdict.TisDays),
+			html.EscapeString(strings.Join(promoCandidatePaths(c), ", ")),
+			html.EscapeString(strings.Join(promoCandidateTypes(c), " & ")),
+			c.Verdict.TigDays, formatDays(c.Verdict.TigDays),
+			c.Verdict.TisDays, formatDays(c.Verdict.TisDays),
 			html.EscapeString(strings.Join(c.Verdict.PendingDisplayCourses, ", ")),
 			html.EscapeString(viiHeld), html.EscapeString(c.LateralTarget))
 	}
 	b.WriteString("</tbody></table>\n")
 	fmt.Fprintf(&b, "<p class=\"note\">%s</p>\n", html.EscapeString(promoDisclaimer))
+	b.WriteString(promoReportScript)
 	b.WriteString("</body></html>\n")
 
 	return &discordgo.File{
@@ -933,6 +978,53 @@ tr:nth-child(even) td{background:#fafafa}
 		Reader:      strings.NewReader(b.String()),
 	}
 }
+
+// promoReportScript powers the HTML report's client-side filter and
+// column sort. Self-contained (no external libs) so it runs straight from a
+// Discord download; no template data is interpolated, so it is a static
+// constant. A cell may carry a data-sort attribute (raw numeric value) which
+// the sort uses in place of the display text.
+const promoReportScript = `<script>
+(function(){
+  var table=document.getElementById('t'), tbody=table.tBodies[0];
+  var q=document.getElementById('q'), shown=document.getElementById('shown');
+  var total=tbody.rows.length;
+  function rows(){return Array.prototype.slice.call(tbody.rows);}
+  function updateCount(){
+    var n=rows().filter(function(r){return r.style.display!=='none';}).length;
+    shown.textContent=n+' of '+total+' shown';
+  }
+  function applyFilter(){
+    var s=q.value.toLowerCase();
+    rows().forEach(function(r){
+      r.style.display=r.textContent.toLowerCase().indexOf(s)>-1?'':'none';
+    });
+    updateCount();
+  }
+  q.addEventListener('input',applyFilter);
+  function val(td){
+    var d=td.getAttribute('data-sort');
+    if(d!==null){var f=parseFloat(d);return isNaN(f)?d:f;}
+    return td.textContent.toLowerCase();
+  }
+  var headers=table.tHead.rows[0].cells, dir={};
+  Array.prototype.forEach.call(headers,function(th,idx){
+    th.addEventListener('click',function(){
+      var asc=dir[idx]=!dir[idx];
+      Array.prototype.forEach.call(headers,function(h){h.className='';});
+      th.className=asc?'sorted-asc':'sorted-desc';
+      rows().sort(function(a,b){
+        var av=val(a.cells[idx]),bv=val(b.cells[idx]);
+        if(av<bv)return asc?-1:1;
+        if(av>bv)return asc?1:-1;
+        return 0;
+      }).forEach(function(r){tbody.appendChild(r);});
+    });
+  });
+  updateCount();
+})();
+</script>
+`
 
 // promoFileScope makes a scope+type label safe for a filename.
 func promoFileScope(scope, promoType string) string {
@@ -954,13 +1046,8 @@ func promoCSVFile(scope, promoType string, asOf time.Time, scan promoScan) *disc
 		"tig_days", "tis_days", "pending_courses", "vii_held", "lateral_target", "milpac_url",
 	})
 	for _, c := range scan.Candidates {
-		var paths []string
-		if c.Verdict.Eligible {
-			paths = append(paths, "standard")
-		}
 		viiHeld := ""
 		if c.ViaVII {
-			paths = append(paths, "vii")
 			viiHeld = c.Vii.Target.Short
 			if c.Vii.TargetHeldDate != "" {
 				viiHeld += " (held " + c.Vii.TargetHeldDate
@@ -970,11 +1057,9 @@ func promoCSVFile(scope, promoType string, asOf time.Time, scan promoScan) *disc
 				viiHeld += ")"
 			}
 		}
-		if c.LateralTarget != "" {
-			paths = append(paths, "lateral")
-		}
 		_ = w.Write([]string{
-			c.Username, c.RankShort, c.Verdict.NextRank, strings.Join(paths, "+"), c.Verdict.Type,
+			c.Username, c.RankShort, c.Verdict.NextRank,
+			strings.Join(promoCandidatePaths(c), ", "), strings.Join(promoCandidateTypes(c), " & "),
 			fmt.Sprintf("%d", c.Verdict.TigDays), fmt.Sprintf("%d", c.Verdict.TisDays),
 			strings.Join(c.Verdict.PendingDisplayCourses, ";"), viiHeld, c.LateralTarget, c.MilpacURL,
 		})
