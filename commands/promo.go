@@ -1,9 +1,9 @@
 package commands
 
-// /promo — S1 promotion checker (issue 7Cav/cavbot2#4).
+// /promo: S1 promotion checker (issue 7Cav/cavbot2#4).
 //
-// Lists every trooper in a scope — a position/unit, or all Active Duty
-// holders of one rank — whose promotion would be possible as of a given date
+// Lists every trooper in a scope (a position/unit, or all Active Duty
+// holders of one rank) whose promotion would be possible as of a given date
 // (default today), via either the standard ladder (promo_eligibility.go) or
 // the Veteran Rank Retention Ch.4 §VII alternative path (vii.go). Both
 // engines are ports of the author's internal S1 promotion tooling.
@@ -94,7 +94,7 @@ const promoOverflowReserve = 80
 const promoDisclaimer = "⚠️ Due to potential discrepancies in MILPAC notation, this command may produce inaccurate results. Treat the output of this command as a candidate list, not a guarantee. Please report inaccurate outputs to S6 so that we may investigate and repair."
 
 // promoRankOrder lists milpac rank short forms most-senior-first (military
-// precedence: officers, then warrants, then enlisted — the milpac display
+// precedence: officers, then warrants, then enlisted, the milpac display
 // order). It drives candidate-list sorting; ranks not listed sort last.
 var promoRankOrder = []string{
 	"GOA", "GEN", "LTG", "MG", "BG", "COL", "LTC", "MAJ", "CPT", "1LT", "2LT",
@@ -135,7 +135,7 @@ func promoDate(t time.Time) string {
 func parsePromoDate(s string) (time.Time, error) {
 	v := strings.TrimSpace(s)
 	if len(v) == 7 {
-		// Go month names parse case-sensitively — canonicalize to "02Jan06".
+		// Go month names parse case-sensitively, so canonicalize to "02Jan06".
 		canon := v[:2] + strings.ToUpper(v[2:3]) + strings.ToLower(v[3:5]) + v[5:]
 		if t, err := time.Parse("02Jan06", canon); err == nil {
 			return t, nil
@@ -358,7 +358,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 		return
 	}
 	// Position/rank are user-supplied, so an empty roster is a plausible user
-	// outcome — message only, no Sentry (ADR 0002).
+	// outcome: message only, no Sentry (ADR 0002).
 	if res.EmptyRoster {
 		switch {
 		case rank != "" && !isActiveDutyScope(position):
@@ -427,7 +427,7 @@ func filterPromoCandidates(candidates []promoCandidate, promoType string) []prom
 	return filtered
 }
 
-// filterPromoExcluding drops candidates whose ONLY path is the excluded one —
+// filterPromoExcluding drops candidates whose ONLY path is the excluded one -
 // a candidate keeps its place if it has any other reason to be promoted. So
 // exclude:vii hides §VII-only troopers but keeps someone eligible via both the
 // standard ladder and §VII.
@@ -459,7 +459,7 @@ func evaluatePromoMember(
 	_, hasLadder := promotionRequirements[rankShort]
 	if !hasLadder && rankModel == nil {
 		// No standard ladder for this rank (COL+, or unrecognized) and no
-		// §VII path this run — not a candidate, not worth a milpac fetch.
+		// §VII path this run: not a candidate, not worth a milpac fetch.
 		// With a rank model present the fetch must happen: §VII can restore a
 		// previously-held rank regardless of the standard ladder.
 		return nil, nil
@@ -523,8 +523,8 @@ func evaluatePromoMember(
 
 // formatPromoMessage renders the candidate list as a single Discord message
 // and reports how many candidates did not fit. A roster-wide scope can return
-// hundreds of candidates — far more than Discord will carry and more than
-// anyone wants paged through a channel — so the message shows as many as fit
+// hundreds of candidates (far more than Discord will carry and more than
+// anyone wants paged through a channel), so the message shows as many as fit
 // and the caller attaches the full report when omitted > 0. The disclaimer
 // always renders: eligibility is parsed from user-entered milpac data, so
 // formatting drift can silently skew results (same rationale as /afsm).
@@ -638,7 +638,7 @@ func isActiveDutyScope(position string) bool {
 }
 
 // isDevcomScope matches the DEVCOM department, which spans the DEVCOM HQ and
-// its D/DEVCOM sub-unit — a fuzzy search on one term misses the other, so
+// its D/DEVCOM sub-unit; a fuzzy search on one term misses the other, so
 // resolvePositionRoster merges both.
 func isDevcomScope(position string) bool {
 	return strings.EqualFold(strings.TrimSpace(position), "DEVCOM")
@@ -759,7 +759,7 @@ func evaluatePromoRoster(ctx context.Context, members []utils.LiteProfileRespons
 // Single-trooper mode
 // ---------------------------------------------------------------------------
 
-// runPromoUser handles /promo user:<name> — the full verdict breakdown for
+// runPromoUser handles /promo user:<name>, the full verdict breakdown for
 // one trooper (the issue #4 "auto-validate a promotion" optional), mirroring
 // the source tool's single-member view.
 func runPromoUser(r utils.InteractionResponder, i *discordgo.InteractionCreate, username string, asOf time.Time) {
@@ -830,7 +830,7 @@ func formatPromoUserVerdict(profile *utils.ProfileResponse, v promoEligibility, 
 	if v.NoRequirements {
 		if _, known := promoRankSeniority[strings.ToUpper(profile.Rank.RankShort)]; known {
 			// Recognized ranks with no TIG/TIS ladder entry (1SG, CSM, SGM,
-			// general officers). Several still advance — but by taking a
+			// general officers). Several still advance, but by taking a
 			// different billet, not by a time-based ladder (e.g. 1SG→SGM/CSM
 			// into a Bn/Regt HQ senior-enlisted seat). COL is NOT here: it has
 			// a ladder entry gated on the regiment-HQ MOS. State it neutrally
@@ -949,7 +949,7 @@ func promoCandidatePaths(c promoCandidate) []string {
 }
 
 // promoCandidateTypes lists the promotion type(s) a candidate qualifies under,
-// automatic first — automatic is always prioritised over the discretionary
+// automatic first; automatic is always prioritised over the discretionary
 // paths in display. §VII and lateral are ALWAYS discretionary, never
 // automatic, so a standard-automatic candidate who also has a §VII path reads
 // "automatic & discretionary".

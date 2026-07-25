@@ -70,7 +70,7 @@ func TestRunPromoHappyPath(t *testing.T) {
 	profiles := map[string]utils.ProfileResponse{
 		"Ready.R": promoFullProfile("Ready.R", "PVT", "2026-04-01", "2026-04-01", "Rifleman 1/1/1/A"),
 		"Fresh.F": promoFullProfile("Fresh.F", "PVT", "2026-05-10", "2026-05-10", "Rifleman 1/1/1/A"),
-		// Deliberately no profile for Topout.T — a fetch would 404 and turn
+		// Deliberately no profile for Topout.T; a fetch would 404 and turn
 		// into a skip, so a clean output also proves the cheap pre-filter (SGM
 		// has no ladder and §VII is unavailable this run).
 	}
@@ -272,7 +272,7 @@ func TestRunPromoMemberFetchFailureSkipsAndReports(t *testing.T) {
 }
 
 // A long list fills one message and reports the remainder for the attached
-// report — the message never exceeds Discord's cap.
+// report: the message never exceeds Discord's cap.
 func TestFormatPromoMessageOverflows(t *testing.T) {
 	candidates := make([]promoCandidate, 80)
 	for idx := range candidates {
@@ -323,7 +323,7 @@ func TestFormatPromoMessageFitsWithoutOverflow(t *testing.T) {
 	}
 }
 
-// manyEligiblePVTs builds a roster and profile set of n eligible PVTs — long
+// manyEligiblePVTs builds a roster and profile set of n eligible PVTs; long
 // enough scopes force multi-message output.
 func manyEligiblePVTs(n int) (utils.LiteRosterResponse, map[string]utils.ProfileResponse) {
 	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{}}
@@ -337,7 +337,7 @@ func manyEligiblePVTs(n int) (utils.LiteRosterResponse, map[string]utils.Profile
 }
 
 // A scope whose list exceeds one message posts what fits and attaches the
-// full report — every candidate still reaches the reader.
+// full report: every candidate still reaches the reader.
 func TestRunPromoLongListAttachesReport(t *testing.T) {
 	roster, profiles := manyEligiblePVTs(60)
 	servePromoAPIWithRanks(t, roster, profiles, viiTestRanks())
@@ -511,7 +511,7 @@ func TestRunPromoViiPath(t *testing.T) {
 }
 
 func TestRunPromoViiDegradationNotice(t *testing.T) {
-	// The plain server (no /milpacs/ranks route) 404s the ranks fetch —
+	// The plain server (no /milpacs/ranks route) 404s the ranks fetch -
 	// output must carry the standard-only notice.
 	roster := utils.LiteRosterResponse{LiteProfiles: map[string]utils.LiteProfileResponse{
 		"1": promoLiteProfile("Ready.R", "PVT", "101"),
@@ -929,8 +929,8 @@ func TestRunPromoUserModeVerdict(t *testing.T) {
 }
 
 // A recognized rank with no TIG/TIS ladder entry (1SG) reads as billet-based
-// advancement — NOT "topped out" (1SG can still make SGM/CSM) and not the
-// bug-like "no ladder defined" — and carries the shared S6 disclaimer.
+// advancement, NOT "topped out" (1SG can still make SGM/CSM) and not the
+// bug-like "no ladder defined", and carries the shared S6 disclaimer.
 func TestRunPromoUserModeNoLadderRank(t *testing.T) {
 	profiles := map[string]utils.ProfileResponse{
 		"Top.T": promoFullProfile("Top.T", "1SG", "2024-01-01", "2022-01-01", "First Sergeant A/ACD"),
@@ -1162,7 +1162,7 @@ func TestPromoReportEscapesMilpacData(t *testing.T) {
 }
 
 // lastAttachments returns the CSV and HTML report bodies from the last Edit
-// call — /promo attaches both when a list ships as files.
+// call: /promo attaches both when a list ships as files.
 func lastAttachments(t *testing.T, f *fakeResponder) (csvBody, htmlBody string) {
 	t.Helper()
 	var edit *discordgo.WebhookEdit

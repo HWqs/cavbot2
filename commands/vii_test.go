@@ -232,7 +232,7 @@ func TestComputeServiceDeptReserveTimer(t *testing.T) {
 	if s.Departures[0].ConsecDays != 517 || s.Departures[0].TotalDays != 517 {
 		t.Errorf("snapshot departure = %+v, want 517/517", s.Departures[0])
 	}
-	// Deferred at the relief: 2023-01-01→2025-06-01 = 882d — the dept year in
+	// Deferred at the relief: 2023-01-01→2025-06-01 = 882d, since the dept year in
 	// the Reserves counted, pushing past the 730d threshold.
 	if s.Departures[1].ConsecDays != 882 || s.Departures[1].Type != "reserve" {
 		t.Errorf("deferred departure = %+v, want reserve/882", s.Departures[1])
@@ -242,7 +242,7 @@ func TestComputeServiceDeptReserveTimer(t *testing.T) {
 	}
 
 	// A line member (no staff duty) transferring to the Reserves stops the
-	// timer at the transfer — no dept credit.
+	// timer at the transfer, with no dept credit.
 	recsLine := []viiRecord{
 		{Date: "2023-01-01", Text: "Enlisted in the 7th Cavalry"},
 		{Date: "2023-06-01", Text: "Transferred and Assigned Rifleman 1/1/1/A"},
@@ -265,7 +265,7 @@ func TestComputeServiceDepartureDropsStaffDuty(t *testing.T) {
 		{Date: "2020-01-01", Text: "Enlisted in the 7th Cavalry"},
 		{Date: "2020-02-01", Text: "Assigned S6 Clerk"},
 		{Date: "2023-01-01", Text: "Retired from the 7th Cavalry"},
-		// Returns with no new assignment — the S6 duty must NOT persist.
+		// Returns with no new assignment; the S6 duty must NOT persist.
 		{Date: "2023-06-01", Text: "Enlisted in the 7th Cavalry"},
 		{Date: "2024-01-01", Text: "Transferred and Assigned Reserves"},
 	}
@@ -377,7 +377,7 @@ func TestViiAnalyzeEligibleVeteran(t *testing.T) {
 }
 
 // A member who never departed (rank reduction, continuous service) is not a
-// returning veteran — §VII must not fire despite a held higher rank.
+// returning veteran, so §VII must not fire despite a held higher rank.
 // Regression: smoke test flagged a continuously-serving SGT who had held SSG.
 func TestViiAnalyzeNoDepartureNotEligible(t *testing.T) {
 	p := &utils.ProfileResponse{
@@ -422,7 +422,7 @@ func TestViiAnalyzeIneligibleReserveDepartureNotQualifying(t *testing.T) {
 }
 
 // Departmental service in the Reserves pushing the timer past the threshold
-// makes the (deferred) reserve departure qualifying — the veteran is §VII
+// makes the (deferred) reserve departure qualifying: the veteran is §VII
 // eligible on return where they wouldn't be without the dept credit.
 func TestViiAnalyzeDeptReserveVeteranEligible(t *testing.T) {
 	p := &utils.ProfileResponse{
@@ -434,7 +434,7 @@ func TestViiAnalyzeDeptReserveVeteranEligible(t *testing.T) {
 			viiRec("2023-02-01", "Transferred and Assigned Section Leader 1/1/A/ACD"),
 			viiRec("2023-06-01", "Promoted to Staff Sergeant (E-6)"),
 			viiRec("2023-08-01", "Assigned S7 Instructor as Additional Duty"),
-			// 517d TIS at transfer — not yet eligible — but the S7 duty keeps
+			// 517d TIS at transfer (not yet eligible), but the S7 duty keeps
 			// the timer running through the Reserves…
 			viiRec("2024-06-01", "Transferred and Assigned Reserves"),
 			// …to 882d at relief: past the 730d threshold, qualifying.

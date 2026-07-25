@@ -42,7 +42,7 @@ func TestAuditBilletRecords(t *testing.T) {
 			want: []string{"Same department (WAG)"},
 		},
 		{
-			name: "cross-department bare assigns are separate secondaries — no flag",
+			name: "cross-department bare assigns are separate secondaries, no flag",
 			p: auditProfile("Holmes.GS", "SGT", "RTC Drill Instructor - Squad",
 				viiRec("2025-01-01", "Enlisted in the 7th Cavalry"),
 				viiRec("2025-10-04", "Assigned RTC Drill Instructor - Squad"),
@@ -78,7 +78,7 @@ func TestAuditBilletRecords(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "retirement drops billets — no missing-relief flag",
+			name: "retirement drops billets, no missing-relief flag",
 			p: auditProfile("Gone.G", "SGT", "Section Leader 1/1/A/ACD",
 				viiRec("2022-01-01", "Enlisted in the 7th Cavalry"),
 				viiRec("2022-06-01", "Assigned S6 Clerk"),
@@ -89,7 +89,7 @@ func TestAuditBilletRecords(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "death/memorial drops billets — no missing-relief flag",
+			name: "death/memorial drops billets, no missing-relief flag",
 			p: auditProfile("Fallen.F", "SGT", "",
 				viiRec("2022-01-01", "Enlisted in the 7th Cavalry"),
 				viiRec("2022-06-01", "Assigned S6 Clerk"),
@@ -98,7 +98,7 @@ func TestAuditBilletRecords(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "reserves keeps billets — bare staff across it does not flag",
+			name: "reserves keeps billets, bare staff across it does not flag",
 			p: auditProfile("Resv.R", "SGT", "Section Leader 1/1/A/ACD",
 				viiRec("2022-01-01", "Enlisted in the 7th Cavalry"),
 				viiRec("2022-06-01", "Assigned S6 Clerk"),

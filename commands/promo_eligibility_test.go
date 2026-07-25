@@ -313,7 +313,7 @@ func TestCalculatePromotionEligibility(t *testing.T) {
 			},
 		},
 		{
-			// 00D is Officer Pool, not Regimental Staff — a pool officer is not
+			// 00D is Officer Pool, not Regimental Staff: a pool officer is not
 			// in a regiment-HQ billet, so 00D does NOT gate COL→BG.
 			name: "COL on 00D (Officer Pool) is not BG-eligible",
 			rank: "COL", promotionDate: "2015-01-01", joinDate: "2010-01-01",
@@ -386,7 +386,7 @@ func TestEligibilityAsOfDateShifts(t *testing.T) {
 // promoLiteFull builds a lite roster entry with the fields the API actually
 // populates. The shared promoLiteProfile helper deliberately leaves them
 // blank, which exercises the pre-filter's "cannot tell, so fetch" path
-// instead — both shapes matter, so the tests use each on purpose.
+// instead; both shapes matter, so the tests use each on purpose.
 func promoLiteFull(username, rankShort, promotionDate, joinDate, position string) utils.LiteProfileResponse {
 	return utils.LiteProfileResponse{
 		User:          utils.User{UserID: "u-" + username, Username: username},
@@ -466,7 +466,7 @@ func TestPromoNeedsProfileUnfiltered(t *testing.T) {
 			name:   "junior enlisted below the billet ceiling still needs fetching",
 			member: promoLiteFull("Fresh.F", "PVT", "2026-05-10", "2026-05-10", "Rifleman 1/1/1/A"),
 			want:   true,
-			why:    "TIG is short, but MEMBER rates CPL — above PVT — so §VII could restore a previously held rank",
+			why:    "TIG is short, but MEMBER rates CPL (above PVT), so §VII could restore a previously held rank",
 		},
 		{
 			name:   "PVT past TIG",
@@ -514,7 +514,7 @@ func TestPromoNeedsProfileUnfiltered(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := (promoFilter{}).needsProfile(tc.member, promoRefDate, m); got != tc.want {
-				t.Errorf("promoNeedsProfile() = %v, want %v — %s", got, tc.want, tc.why)
+				t.Errorf("promoNeedsProfile() = %v, want %v (%s)", got, tc.want, tc.why)
 			}
 		})
 	}
@@ -555,7 +555,7 @@ func TestPromoNeedsProfileByType(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%s/%s", tc.promoType, tc.member.User.Username), func(t *testing.T) {
 			if got := (promoFilter{include: tc.promoType}).needsProfile(tc.member, promoRefDate, m); got != tc.want {
-				t.Errorf("promoNeedsProfile(type=%s) = %v, want %v — %s", tc.promoType, got, tc.want, tc.why)
+				t.Errorf("promoNeedsProfile(type=%s) = %v, want %v (%s)", tc.promoType, got, tc.want, tc.why)
 			}
 		})
 	}
@@ -653,7 +653,7 @@ func TestRunPromoPreFilterSkipsFetches(t *testing.T) {
 	runPromo(f, i, afsmRefDate)
 
 	if got := hits.Load(); got != 1 {
-		t.Errorf("profile fetches = %d, want 1 — the ten automatic-rung PFCs should never be opened", got)
+		t.Errorf("profile fetches = %d, want 1 (the ten automatic-rung PFCs should never be opened)", got)
 	}
 	if !strings.Contains(lastEditContent(f.Calls()), "Lead.L") {
 		t.Errorf("the discretionary candidate is missing from the output: %q", lastEditContent(f.Calls()))
@@ -677,6 +677,6 @@ func TestRunPromoUnfilteredStillFetchesBroadly(t *testing.T) {
 	runPromo(f, promoInteraction("ACD", ""), afsmRefDate)
 
 	if got := hits.Load(); got != 5 {
-		t.Errorf("profile fetches = %d, want 5 — §VII keeps sub-ceiling ranks in play when unfiltered", got)
+		t.Errorf("profile fetches = %d, want 5 (§VII keeps sub-ceiling ranks in play when unfiltered)", got)
 	}
 }

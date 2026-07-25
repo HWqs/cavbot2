@@ -37,7 +37,7 @@ func (f *fakeChannelSender) ChannelMessageSendComplex(channelID string, data *di
 }
 
 func TestPromoSweepConfig(t *testing.T) {
-	// Channel, scope, and the kill switch are all constants — nothing is read
+	// Channel, scope, and the kill switch are all constants; nothing is read
 	// from the environment, so a stray variable can't redirect the sweep.
 	t.Setenv("PROMO_SWEEP_CHANNEL_ID", "999")
 	t.Setenv("PROMO_SWEEP_POSITIONS", "S6")
