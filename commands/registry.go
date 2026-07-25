@@ -20,6 +20,9 @@ func NewRegistry() *Registry {
 		AFSM(),
 		GamertagSearch(),
 		S3AAR(),
+		Promo(),
+		PromoSweepNow(),
+		BilletAudit(),
 	)
 	return r
 }
