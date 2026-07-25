@@ -18,8 +18,6 @@ import (
 
 var errBoom = errors.New("boom")
 
-func ioCopy(dst io.Writer, src io.Reader) (int64, error) { return io.Copy(dst, src) }
-
 // fakeChannelSender records ChannelMessageSend calls; optional error queue.
 type fakeChannelSender struct {
 	mu       sync.Mutex
@@ -295,7 +293,7 @@ func TestCollectPromoCandidatesActiveDutyScope(t *testing.T) {
 	// Canonical spelling and the legacy hyphenated one must both route to the
 	// combat roster.
 	for _, scopeSpelling := range []string{"activeduty", "Active-Duty"} {
-		scan, err := collectPromoCandidates(t.Context(), scopeSpelling, afsmRefDate, "")
+		scan, err := collectPromoCandidates(t.Context(), scopeSpelling, afsmRefDate, promoFilter{})
 		if err != nil {
 			t.Fatalf("collectPromoCandidates(%q): %v", scopeSpelling, err)
 		}

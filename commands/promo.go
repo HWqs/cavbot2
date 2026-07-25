@@ -22,8 +22,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Promotion-path values for the `type` filter option. automatic and
-// discretionary are the standard-ladder Type values from
+// Promotion-path values for the `type`/`exclude` filter options. automatic
+// and discretionary are the standard-ladder Type values from
 // promotionRequirements; vii and lateral are the alternative paths.
 const (
 	promoTypeAutomatic     = "automatic"
@@ -31,6 +31,38 @@ const (
 	promoTypeVii           = "vii"
 	promoTypeLateral       = "lateral"
 )
+
+// promoFilter narrows the candidate list. include keeps only candidates with
+// that path; exclude drops candidates whose ONLY path is the excluded one. The
+// two are mutually exclusive (validated in runPromo); both empty = no filter.
+type promoFilter struct {
+	include string
+	exclude string
+}
+
+// apply narrows candidates per the filter (no-op when neither is set).
+func (f promoFilter) apply(candidates []promoCandidate) []promoCandidate {
+	switch {
+	case f.include != "":
+		return filterPromoCandidates(candidates, f.include)
+	case f.exclude != "":
+		return filterPromoExcluding(candidates, f.exclude)
+	default:
+		return candidates
+	}
+}
+
+// phrase is the noun phrase for prose ("automatic promotion", "promotion
+// excluding §VII", or plain "promotion").
+func (f promoFilter) phrase() string { return promoFilterPhrase(f.include, f.exclude) }
+
+// tag labels filenames and logs ("automatic", "excl-vii", or "").
+func (f promoFilter) tag() string {
+	if f.exclude != "" {
+		return "excl-" + f.exclude
+	}
+	return f.include
+}
 
 // promoCandidate is one line of /promo output.
 type promoCandidate struct {
@@ -131,6 +163,24 @@ func promoPhrase(promoType string) string {
 	}
 }
 
+// promoTypeWord is a single filter value rendered for prose (§VII for vii).
+func promoTypeWord(t string) string {
+	if t == promoTypeVii {
+		return "§VII"
+	}
+	return t
+}
+
+// promoFilterPhrase is the noun phrase reflecting the active filter: the
+// include phrase for a type filter, or "promotion excluding <path>" for an
+// exclude filter (the two are mutually exclusive).
+func promoFilterPhrase(promoType, excludeType string) string {
+	if excludeType != "" {
+		return "promotion excluding " + promoTypeWord(excludeType)
+	}
+	return promoPhrase(promoType)
+}
+
 // upperFirst capitalizes the leading ASCII letter for sentence starts.
 func upperFirst(s string) string {
 	if s == "" || s[0] < 'a' || s[0] > 'z' {
@@ -187,6 +237,18 @@ func Promo() Command {
 						{Name: "lateral", Value: promoTypeLateral},
 					},
 				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "exclude",
+					Description: "Hide one promotion path (e.g. exclude:vii shows everyone except §VII-only candidates)",
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "automatic", Value: promoTypeAutomatic},
+						{Name: "discretionary", Value: promoTypeDiscretionary},
+						{Name: "vii (veteran rank retention)", Value: promoTypeVii},
+						{Name: "lateral", Value: promoTypeLateral},
+					},
+				},
 			},
 		},
 		Handler: handlePromoCommand,
@@ -202,7 +264,7 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 	username, discordID := interactionUsernameAndID(i)
 	utils.Info("🚀 Starting Promo Check", "command", "Promo", "username", username, "discord_id", discordID)
 
-	position, user, rank, promoType := "", "", "", ""
+	position, user, rank, promoType, excludeType := "", "", "", "", ""
 	forceFile := false
 	asOf := now
 	for _, opt := range i.ApplicationCommandData().Options {
@@ -215,6 +277,8 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 			rank = opt.StringValue()
 		case "type":
 			promoType = opt.StringValue()
+		case "exclude":
+			excludeType = opt.StringValue()
 		case "force_file_output":
 			forceFile = opt.BoolValue()
 		case "as_of":
@@ -241,6 +305,10 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 		utils.HandleError(r, i, "❌ Provide at most one of `position` (scope check), `user` (single-trooper verdict), or `rank` (rank-wide check).")
 		return
 	}
+	if promoType != "" && excludeType != "" {
+		utils.HandleError(r, i, "❌ Use either `type` (show only one path) or `exclude` (hide one path), not both.")
+		return
+	}
 	if modes == 0 {
 		position = promoActiveDutyScope
 	}
@@ -250,21 +318,25 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 	}
 
 	// Scope label: the position as typed, or the rank in canonical upper-case
-	// form. Prose uses scopeDisplay/promoPhrase; filenames and logs keep the
-	// raw scope (plus a type tag for logs).
+	// form. Prose uses scopeDisplay/promoFilterPhrase; filenames and logs keep
+	// the raw scope (plus a filter tag for logs).
 	scope := position
 	if rank != "" {
 		scope = strings.ToUpper(rank)
 	}
+	filterTag := promoType
+	if excludeType != "" {
+		filterTag = "excl-" + excludeType
+	}
 	logScope := scope
-	if promoType != "" {
-		logScope += " (" + promoType + ")"
+	if filterTag != "" {
+		logScope += " (" + filterTag + ")"
 	}
 
 	err := r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: fmt.Sprintf("Checking %s eligibility for %s as of %s...", promoPhrase(promoType), scopeDisplay(scope), promoDate(asOf)),
+			Content: fmt.Sprintf("Checking %s eligibility for %s as of %s...", promoFilterPhrase(promoType, excludeType), scopeDisplay(scope), promoDate(asOf)),
 		},
 	})
 	if err != nil {
@@ -278,11 +350,12 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	filter := promoFilter{include: promoType, exclude: excludeType}
 	var res promoScan
 	if rank != "" {
-		res, err = collectPromoCandidatesByRank(ctx, rank, asOf, promoType)
+		res, err = collectPromoCandidatesByRank(ctx, rank, asOf, filter)
 	} else {
-		res, err = collectPromoCandidates(ctx, position, asOf, promoType)
+		res, err = collectPromoCandidates(ctx, position, asOf, filter)
 	}
 	if err != nil {
 		utils.CaptureError("❌ Roster fetch failed", err)
@@ -299,11 +372,9 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 		}
 		return
 	}
-	if promoType != "" {
-		res.Candidates = filterPromoCandidates(res.Candidates, promoType)
-	}
+	res.Candidates = filter.apply(res.Candidates)
 
-	message, omitted := formatPromoMessage(scope, promoType, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
+	message, omitted := formatPromoMessage(scope, filter, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
 	attach := forceFile || omitted > 0
 	edit := &discordgo.WebhookEdit{Content: &message}
 	if attach {
@@ -311,8 +382,8 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 		// the full detail rides along as both a CSV (for spreadsheets) and an
 		// HTML report (for reading with clickable links).
 		edit.Files = []*discordgo.File{
-			promoCSVFile(scope, promoType, asOf, res),
-			promoReportFile(scope, promoType, asOf, res),
+			promoCSVFile(scope, filter, asOf, res),
+			promoReportFile(scope, filter, asOf, res),
 		}
 	}
 	if err := r.InteractionResponseEdit(i.Interaction, edit); err != nil {
@@ -323,26 +394,53 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 		"eligible", len(res.Candidates), "omitted_from_message", omitted, "attached_file", attach)
 }
 
-// filterPromoCandidates keeps only candidates eligible via the given
-// promotion path. automatic/discretionary require STANDARD eligibility of
-// that ladder type (a §VII-only or lateral-only candidate whose current
-// rank's ladder happens to be that type does not count); vii keeps §VII
-// eligibles and lateral keeps winged-aviator warrant moves, in both cases
-// regardless of standard-ladder status.
+// candidateFilterCategories lists the filter categories a candidate matches:
+// its standard ladder type (automatic/discretionary) if standard-eligible,
+// plus vii and/or lateral for those paths. These are the values the type and
+// exclude filters key off. A candidate in the list always has at least one.
+func candidateFilterCategories(c promoCandidate) []string {
+	var cats []string
+	if c.Verdict.Eligible {
+		cats = append(cats, c.Verdict.Type) // automatic or discretionary
+	}
+	if c.ViaVII {
+		cats = append(cats, promoTypeVii)
+	}
+	if c.LateralTarget != "" {
+		cats = append(cats, promoTypeLateral)
+	}
+	return cats
+}
+
+// filterPromoCandidates keeps only candidates matching the given promotion
+// path. automatic/discretionary require STANDARD eligibility of that ladder
+// type; vii keeps §VII eligibles and lateral keeps winged-aviator warrant
+// moves, both regardless of standard-ladder status.
 func filterPromoCandidates(candidates []promoCandidate, promoType string) []promoCandidate {
 	filtered := make([]promoCandidate, 0, len(candidates))
 	for _, c := range candidates {
-		keep := false
-		switch promoType {
-		case promoTypeAutomatic, promoTypeDiscretionary:
-			keep = c.Verdict.Eligible && c.Verdict.Type == promoType
-		case promoTypeVii:
-			keep = c.ViaVII
-		case promoTypeLateral:
-			keep = c.LateralTarget != ""
+		for _, cat := range candidateFilterCategories(c) {
+			if cat == promoType {
+				filtered = append(filtered, c)
+				break
+			}
 		}
-		if keep {
-			filtered = append(filtered, c)
+	}
+	return filtered
+}
+
+// filterPromoExcluding drops candidates whose ONLY path is the excluded one —
+// a candidate keeps its place if it has any other reason to be promoted. So
+// exclude:vii hides §VII-only troopers but keeps someone eligible via both the
+// standard ladder and §VII.
+func filterPromoExcluding(candidates []promoCandidate, excludeType string) []promoCandidate {
+	filtered := make([]promoCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		for _, cat := range candidateFilterCategories(c) {
+			if cat != excludeType {
+				filtered = append(filtered, c)
+				break
+			}
 		}
 	}
 	return filtered
@@ -431,7 +529,7 @@ func evaluatePromoMember(
 // and the caller attaches the full report when omitted > 0. The disclaimer
 // always renders: eligibility is parsed from user-entered milpac data, so
 // formatting drift can silently skew results (same rationale as /afsm).
-func formatPromoMessage(scope, promoType string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) (string, int) {
+func formatPromoMessage(scope string, filter promoFilter, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) (string, int) {
 	footer := promoFooter(skippedCount, viiActive)
 
 	var b strings.Builder
@@ -439,12 +537,12 @@ func formatPromoMessage(scope, promoType string, asOf time.Time, candidates []pr
 	b.WriteString("\n\n")
 
 	if len(candidates) == 0 {
-		b.WriteString(fmt.Sprintf("No %s members eligible for %s as of %s", scopeDisplay(scope), promoPhrase(promoType), promoDate(asOf)))
+		b.WriteString(fmt.Sprintf("No %s members eligible for %s as of %s", scopeDisplay(scope), filter.phrase(), promoDate(asOf)))
 		b.WriteString(footer)
 		return strings.TrimRight(b.String(), "\n"), 0
 	}
 
-	b.WriteString(fmt.Sprintf("**%s members eligible for %s as of %s:**\n", upperFirst(scopeDisplay(scope)), promoPhrase(promoType), promoDate(asOf)))
+	b.WriteString(fmt.Sprintf("**%s members eligible for %s as of %s:**\n", upperFirst(scopeDisplay(scope)), filter.phrase(), promoDate(asOf)))
 
 	// Reserve room for the footer and a worst-case overflow notice so the
 	// message cannot be pushed over the limit by what gets appended after
@@ -571,7 +669,7 @@ func resolvePositionRoster(ctx context.Context, position string) (*utils.LiteRos
 	return utils.GetRosterByFuzzyPositionSearch(ctx, position)
 }
 
-func collectPromoCandidates(ctx context.Context, position string, asOf time.Time, promoType string) (promoScan, error) {
+func collectPromoCandidates(ctx context.Context, position string, asOf time.Time, filter promoFilter) (promoScan, error) {
 	roster, err := resolvePositionRoster(ctx, position)
 	if err != nil {
 		return promoScan{}, err
@@ -586,13 +684,13 @@ func collectPromoCandidates(ctx context.Context, position string, asOf time.Time
 	for _, member := range roster.LiteProfiles {
 		members = append(members, member)
 	}
-	return evaluatePromoRoster(ctx, members, position, asOf, promoType), nil
+	return evaluatePromoRoster(ctx, members, position, asOf, filter), nil
 }
 
 // collectPromoCandidatesByRank runs the eligibility pass for every Active
 // Duty trooper currently holding rankShort (case-insensitive milpac short
 // form, e.g. "PFC").
-func collectPromoCandidatesByRank(ctx context.Context, rankShort string, asOf time.Time, promoType string) (promoScan, error) {
+func collectPromoCandidatesByRank(ctx context.Context, rankShort string, asOf time.Time, filter promoFilter) (promoScan, error) {
 	roster, err := utils.GetLiteRoster(ctx, "ROSTER_TYPE_COMBAT")
 	if err != nil {
 		return promoScan{}, err
@@ -609,13 +707,13 @@ func collectPromoCandidatesByRank(ctx context.Context, rankShort string, asOf ti
 	if len(members) == 0 {
 		return promoScan{EmptyRoster: true}, nil
 	}
-	return evaluatePromoRoster(ctx, members, "rank:"+rankShort, asOf, promoType), nil
+	return evaluatePromoRoster(ctx, members, "rank:"+rankShort, asOf, filter), nil
 }
 
 // evaluatePromoRoster is the scope-independent tail of an eligibility pass:
 // rank-model fetch (degradable), concurrent per-member evaluation, and the
 // seniority sort. scopeLabel is for error reporting only.
-func evaluatePromoRoster(ctx context.Context, members []utils.LiteProfileResponse, scopeLabel string, asOf time.Time, promoType string) promoScan {
+func evaluatePromoRoster(ctx context.Context, members []utils.LiteProfileResponse, scopeLabel string, asOf time.Time, filter promoFilter) promoScan {
 	// Rank model for the §VII path, fetched once per pass (after the callers'
 	// empty-roster early returns, so an empty scope costs no extra call). A
 	// failure degrades to standard-ladder-only rather than failing the pass.
@@ -630,12 +728,12 @@ func evaluatePromoRoster(ctx context.Context, members []utils.LiteProfileRespons
 	// spends milpac fetches on records that could change the answer.
 	fetchable := make([]utils.LiteProfileResponse, 0, len(members))
 	for _, member := range members {
-		if promoNeedsProfile(member, asOf, rankModel, promoType) {
+		if filter.needsProfile(member, asOf, rankModel) {
 			fetchable = append(fetchable, member)
 		}
 	}
 	utils.Info("🔎 Pre-filtered roster on lite data",
-		"scope", scopeLabel, "type", promoType, "roster", len(members),
+		"scope", scopeLabel, "filter", filter.tag(), "roster", len(members),
 		"fetching", len(fetchable), "ruled_out", len(members)-len(fetchable))
 	members = fetchable
 
@@ -884,9 +982,9 @@ func promoCandidateTypes(c promoCandidate) []string {
 // a few hundred rows the table stays legible in a browser, milpac links stay
 // clickable, and there is no spreadsheet import step. Everything is inlined
 // so the file works straight from a Discord download.
-func promoReportFile(scope, promoType string, asOf time.Time, scan promoScan) *discordgo.File {
+func promoReportFile(scope string, filter promoFilter, asOf time.Time, scan promoScan) *discordgo.File {
 	title := fmt.Sprintf("%s eligibility — %s — %s",
-		upperFirst(promoPhrase(promoType)), scopeDisplay(scope), promoDate(asOf))
+		upperFirst(filter.phrase()), scopeDisplay(scope), promoDate(asOf))
 
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n")
@@ -958,7 +1056,7 @@ tr:nth-child(even) td{background:#fafafa}
 	b.WriteString("</body></html>\n")
 
 	return &discordgo.File{
-		Name:        fmt.Sprintf("promo_report_%s_%s.html", promoFileScope(scope, promoType), asOf.Format("2006-01-02")),
+		Name:        fmt.Sprintf("promo_report_%s_%s.html", promoFileScope(scope, filter), asOf.Format("2006-01-02")),
 		ContentType: "text/html",
 		Reader:      strings.NewReader(b.String()),
 	}
@@ -1012,10 +1110,10 @@ const promoReportScript = `<script>
 `
 
 // promoFileScope makes a scope+type label safe for a filename.
-func promoFileScope(scope, promoType string) string {
+func promoFileScope(scope string, filter promoFilter) string {
 	fileScope := strings.ReplaceAll(scope, "/", "-")
-	if promoType != "" {
-		fileScope += "_" + promoType
+	if tag := filter.tag(); tag != "" {
+		fileScope += "_" + tag
 	}
 	return fileScope
 }
@@ -1023,7 +1121,7 @@ func promoFileScope(scope, promoType string) string {
 // promoCSVFile is the machine-readable companion to the HTML report, for
 // pivoting in a spreadsheet. Same rows as the HTML table; encoding/csv handles
 // escaping, and the strings.Builder target means no I/O error path in practice.
-func promoCSVFile(scope, promoType string, asOf time.Time, scan promoScan) *discordgo.File {
+func promoCSVFile(scope string, filter promoFilter, asOf time.Time, scan promoScan) *discordgo.File {
 	var sb strings.Builder
 	w := csv.NewWriter(&sb)
 	_ = w.Write([]string{
@@ -1051,7 +1149,7 @@ func promoCSVFile(scope, promoType string, asOf time.Time, scan promoScan) *disc
 	}
 	w.Flush()
 	return &discordgo.File{
-		Name:        fmt.Sprintf("promo_report_%s_%s.csv", promoFileScope(scope, promoType), asOf.Format("2006-01-02")),
+		Name:        fmt.Sprintf("promo_report_%s_%s.csv", promoFileScope(scope, filter), asOf.Format("2006-01-02")),
 		ContentType: "text/csv",
 		Reader:      strings.NewReader(sb.String()),
 	}

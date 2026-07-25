@@ -48,30 +48,38 @@ var promoAllCourses = courseCompletions{
 	NcoaPhase1: true, NcoaPhase2: true, Sac: true, Ods: true, Rdptc: true,
 }
 
-// promoNeedsProfile reports whether any promotion path the caller cares about
-// could still apply to a member, judging only from lite-roster data. False
-// means the milpac fetch cannot change the output and is skipped.
+// needsProfile reports whether any promotion path the filter still allows
+// could apply to a member, judging only from lite-roster data. False means the
+// milpac fetch cannot change the output and is skipped.
 //
-// promoType is the /promo type filter. It matters a great deal here: that
-// filter already discards candidates after the fetch, so honouring it before
-// the fetch costs nothing and removes whole paths from consideration. An
-// unfiltered run has to keep every path open and saves comparatively little,
-// because §VII can only be ruled out where the billet ceiling is no more
-// senior than the rank already held, and the lateral path has to fetch every
-// NCO to see their wings.
-func promoNeedsProfile(member utils.LiteProfileResponse, asOf time.Time, rankModel *viiRankModel, promoType string) bool {
-	switch promoType {
-	case promoTypeAutomatic, promoTypeDiscretionary:
-		return ladderTypeMatches(member, promoType) && standardPathPossible(member, asOf)
-	case promoTypeLateral:
-		return lateralPathPossible(member)
-	case promoTypeVii:
-		return viiPathPossible(member, rankModel)
-	default:
-		return standardPathPossible(member, asOf) ||
-			lateralPathPossible(member) ||
-			viiPathPossible(member, rankModel)
+// The filter matters a great deal here: an include (type) filter narrows to a
+// single path so whole rank groups can be ruled out before the fetch; an
+// exclude filter keeps every path but the excluded one, which is the same set
+// of predicates OR'd together. An unfiltered run has to keep every path open
+// and saves comparatively little, because §VII can only be ruled out where the
+// billet ceiling is no more senior than the rank already held, and the lateral
+// path has to fetch every NCO to see their wings.
+func (f promoFilter) needsProfile(member utils.LiteProfileResponse, asOf time.Time, rankModel *viiRankModel) bool {
+	// A path is "kept" unless it is the excluded one or (for an include
+	// filter) not the included one.
+	keeps := func(path string) bool {
+		if f.exclude != "" {
+			return path != f.exclude
+		}
+		if f.include != "" {
+			return path == f.include
+		}
+		return true
 	}
+	// For automatic/discretionary the ladder type must also match; §VII and
+	// lateral have their own possibility checks.
+	standardKind := func(kind string) bool {
+		return keeps(kind) && ladderTypeMatches(member, kind) && standardPathPossible(member, asOf)
+	}
+	return standardKind(promoTypeAutomatic) ||
+		standardKind(promoTypeDiscretionary) ||
+		(keeps(promoTypeVii) && viiPathPossible(member, rankModel)) ||
+		(keeps(promoTypeLateral) && lateralPathPossible(member))
 }
 
 // ladderTypeMatches reports whether the member's next rung is of the

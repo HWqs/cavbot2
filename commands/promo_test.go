@@ -282,7 +282,7 @@ func TestFormatPromoMessageOverflows(t *testing.T) {
 			Verdict:   promoEligibility{Eligible: true, NextRank: "PFC", Type: "automatic"},
 		}
 	}
-	msg, omitted := formatPromoMessage("ACD", "", mustParseDate("2026-05-15"), candidates, 1, false)
+	msg, omitted := formatPromoMessage("ACD", promoFilter{}, mustParseDate("2026-05-15"), candidates, 1, false)
 	if omitted <= 0 {
 		t.Fatalf("80 candidates should overflow one message, omitted = %d", omitted)
 	}
@@ -313,7 +313,7 @@ func TestFormatPromoMessageFitsWithoutOverflow(t *testing.T) {
 		RankShort: "PVT",
 		Verdict:   promoEligibility{Eligible: true, NextRank: "PFC", Type: "automatic"},
 	}}
-	msg, omitted := formatPromoMessage("ACD", "", mustParseDate("2026-05-15"), candidates, 0, true)
+	msg, omitted := formatPromoMessage("ACD", promoFilter{}, mustParseDate("2026-05-15"), candidates, 0, true)
 	if omitted != 0 {
 		t.Errorf("omitted = %d, want 0", omitted)
 	}
@@ -372,7 +372,7 @@ func TestRunPromoLongListAttachesReport(t *testing.T) {
 }
 
 func TestFormatPromoMessageNoCandidates(t *testing.T) {
-	msg, omitted := formatPromoMessage("ACD", "", mustParseDate("2026-05-15"), nil, 0, true)
+	msg, omitted := formatPromoMessage("ACD", promoFilter{}, mustParseDate("2026-05-15"), nil, 0, true)
 	if omitted != 0 {
 		t.Errorf("omitted = %d, want 0", omitted)
 	}
@@ -386,8 +386,8 @@ func TestPromoDefinition(t *testing.T) {
 	if cmd.Definition.Name != "promo" {
 		t.Errorf("command name = %q, want promo", cmd.Definition.Name)
 	}
-	if len(cmd.Definition.Options) != 6 {
-		t.Fatalf("options = %d, want 6 (position, user, rank, type, as_of, force_file_output)", len(cmd.Definition.Options))
+	if len(cmd.Definition.Options) != 7 {
+		t.Fatalf("options = %d, want 7 (position, user, rank, type, exclude, as_of, force_file_output)", len(cmd.Definition.Options))
 	}
 	for _, opt := range cmd.Definition.Options {
 		if opt.Required {
@@ -775,6 +775,84 @@ func TestRunPromoTypeFilters(t *testing.T) {
 	}
 }
 
+func promoExcludeInteraction(excludeType string) *discordgo.InteractionCreate {
+	i := promoInteraction("ACD", "")
+	data := i.Data.(discordgo.ApplicationCommandInteractionData)
+	data.Options = append(data.Options, &discordgo.ApplicationCommandInteractionDataOption{
+		Name: "exclude", Type: discordgo.ApplicationCommandOptionString, Value: excludeType,
+	})
+	i.Data = data
+	return i
+}
+
+// exclude:X hides the candidate whose only path is X and keeps the other three.
+func TestRunPromoExcludeFilters(t *testing.T) {
+	cases := []struct {
+		excludeType string
+		gone        string // the candidate that must disappear
+	}{
+		{"automatic", "Ready.R"},
+		{"discretionary", "Sarge.S"},
+		{"vii", "Vet.V"},
+		{"lateral", "Wings.W"},
+	}
+	all := []string{"Ready.R", "Sarge.S", "Vet.V", "Wings.W"}
+	for _, tc := range cases {
+		t.Run(tc.excludeType, func(t *testing.T) {
+			servePromoTypeFixture(t)
+			f := &fakeResponder{}
+			runPromo(f, promoExcludeInteraction(tc.excludeType), afsmRefDate)
+
+			content := lastEditContent(f.Calls())
+			if strings.Contains(content, tc.gone) {
+				t.Errorf("%s should be excluded by exclude:%s: %q", tc.gone, tc.excludeType, content)
+			}
+			for _, other := range all {
+				if other != tc.gone && !strings.Contains(content, other) {
+					t.Errorf("%s should survive exclude:%s: %q", other, tc.excludeType, content)
+				}
+			}
+			if !strings.Contains(content, "excluding "+promoTypeWord(tc.excludeType)) {
+				t.Errorf("header should note the exclusion: %q", content)
+			}
+		})
+	}
+}
+
+// A candidate eligible via BOTH standard and §VII survives exclude:vii,
+// because §VII is not their only path.
+func TestFilterPromoExcludingKeepsMultiPath(t *testing.T) {
+	both := promoCandidate{Verdict: promoEligibility{Eligible: true, Type: "automatic"}, ViaVII: true, Vii: &viiResult{Target: &viiRank{Short: "SGT"}}}
+	viiOnly := promoCandidate{Verdict: promoEligibility{Eligible: false}, ViaVII: true, Vii: &viiResult{Target: &viiRank{Short: "SGT"}}}
+	got := filterPromoExcluding([]promoCandidate{both, viiOnly}, promoTypeVii)
+	if len(got) != 1 || !got[0].Verdict.Eligible {
+		t.Errorf("exclude:vii should keep only the standard+§VII candidate, got %+v", got)
+	}
+}
+
+// type and exclude cannot be combined.
+func TestRunPromoTypeAndExcludeConflict(t *testing.T) {
+	i := promoTypeInteraction("automatic")
+	data := i.Data.(discordgo.ApplicationCommandInteractionData)
+	data.Options = append(data.Options, &discordgo.ApplicationCommandInteractionDataOption{
+		Name: "exclude", Type: discordgo.ApplicationCommandOptionString, Value: "vii",
+	})
+	i.Data = data
+
+	f := &fakeResponder{}
+	runPromo(f, i, afsmRefDate)
+	found := false
+	for _, call := range f.Calls() {
+		if call.Method == "Respond" && call.Response != nil && call.Response.Data != nil &&
+			strings.Contains(call.Response.Data.Content, "not both") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected type+exclude conflict error, calls: %+v", f.Calls())
+	}
+}
+
 // Unfiltered lists must include the lateral-only candidate with the lateral
 // rendering.
 func TestRunPromoLateralInUnfilteredList(t *testing.T) {
@@ -1031,7 +1109,7 @@ func TestPromoReportEscapesMilpacData(t *testing.T) {
 		RankShort: "PVT",
 		Verdict:   promoEligibility{Eligible: true, NextRank: "PFC", Type: "automatic"},
 	}}}
-	file := promoReportFile("ACD", "", mustParseDate("2026-05-15"), scan)
+	file := promoReportFile("ACD", promoFilter{}, mustParseDate("2026-05-15"), scan)
 	var sb strings.Builder
 	if _, err := io.Copy(&sb, file.Reader); err != nil {
 		t.Fatalf("read report: %v", err)

@@ -143,7 +143,7 @@ func TestPromoNeedsProfileUnfiltered(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := promoNeedsProfile(tc.member, promoRefDate, m, ""); got != tc.want {
+			if got := (promoFilter{}).needsProfile(tc.member, promoRefDate, m); got != tc.want {
 				t.Errorf("promoNeedsProfile() = %v, want %v — %s", got, tc.want, tc.why)
 			}
 		})
@@ -184,7 +184,7 @@ func TestPromoNeedsProfileByType(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%s/%s", tc.promoType, tc.member.User.Username), func(t *testing.T) {
-			if got := promoNeedsProfile(tc.member, promoRefDate, m, tc.promoType); got != tc.want {
+			if got := (promoFilter{include: tc.promoType}).needsProfile(tc.member, promoRefDate, m); got != tc.want {
 				t.Errorf("promoNeedsProfile(type=%s) = %v, want %v — %s", tc.promoType, got, tc.want, tc.why)
 			}
 		})
@@ -198,7 +198,7 @@ func TestViiPathPossibleWithoutRankModel(t *testing.T) {
 	if viiPathPossible(member, nil) {
 		t.Error("viiPathPossible with a nil model = true, want false")
 	}
-	if promoNeedsProfile(member, promoRefDate, nil, "") {
+	if (promoFilter{}).needsProfile(member, promoRefDate, nil) {
 		t.Error("SPC short on TIG with §VII disabled should not be fetched")
 	}
 }
@@ -236,7 +236,7 @@ func TestPreFilterNeverDropsACandidate(t *testing.T) {
 	for _, promoType := range []string{"", promoTypeAutomatic, promoTypeDiscretionary, promoTypeVii, promoTypeLateral} {
 		for _, f := range fixtures {
 			name := f.lite.User.Username
-			if promoNeedsProfile(f.lite, promoRefDate, m, promoType) {
+			if (promoFilter{include: promoType}).needsProfile(f.lite, promoRefDate, m) {
 				continue // fetched anyway; nothing to prove
 			}
 			got, err := evaluatePromoMember(t.Context(), f.lite, promoRefDate, m)
