@@ -137,21 +137,31 @@ func TestRunPromoSweepAttachesReportForLongLists(t *testing.T) {
 	if !strings.Contains(sender.bodies[0], "Weekly promotion sweep") {
 		t.Errorf("sweep header missing: %q", sender.bodies[0])
 	}
-	if !strings.Contains(sender.bodies[0], "full list in the attached report") {
-		t.Errorf("overflow notice missing: %q", sender.bodies[0])
+	if !strings.Contains(sender.bodies[0], "Full list in the attached CSV and HTML report") {
+		t.Errorf("summary pointer missing: %q", sender.bodies[0])
 	}
-	if len(sender.files) != 1 || len(sender.files[0]) != 1 {
-		t.Fatalf("expected one attached report, got %+v", sender.files)
+	if strings.Contains(sender.bodies[0], "Member.000") {
+		t.Errorf("summary should not inline candidates: %q", sender.bodies[0])
 	}
-	if !strings.HasSuffix(sender.files[0][0].Name, ".html") {
-		t.Errorf("attachment = %q, want .html", sender.files[0][0].Name)
+	if len(sender.files) != 1 || len(sender.files[0]) != 2 {
+		t.Fatalf("expected CSV + HTML attachments, got %+v", sender.files)
 	}
-	// Every candidate reaches the reader, via the report.
-	report := readFileBody(t, sender.files[0][0])
+	// Every candidate reaches the reader via both reports.
+	var htmlReport, csvReport string
+	for _, fl := range sender.files[0] {
+		if strings.HasSuffix(fl.Name, ".html") {
+			htmlReport = readFileBody(t, fl)
+		} else if strings.HasSuffix(fl.Name, ".csv") {
+			csvReport = readFileBody(t, fl)
+		}
+	}
+	if htmlReport == "" || csvReport == "" {
+		t.Fatalf("missing csv or html attachment: %+v", sender.files[0])
+	}
 	for i := 0; i < 60; i++ {
 		name := fmt.Sprintf("Member.%03d", i)
-		if !strings.Contains(report, name) {
-			t.Fatalf("candidate %s missing from attached report", name)
+		if !strings.Contains(htmlReport, name) || !strings.Contains(csvReport, name) {
+			t.Fatalf("candidate %s missing from a report", name)
 		}
 	}
 }

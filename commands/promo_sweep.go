@@ -162,13 +162,18 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 			)
 			msg.Content = fmt.Sprintf("⚠️ Promotion sweep: the %s roster came back empty — this shouldn't happen for a configured position. The issue has been reported.", position)
 		} else {
-			// Same overflow rule as the slash command: what fits goes in the
-			// post, the rest rides along as the attached report.
+			// Same rule as the slash command: a list that fits posts inline;
+			// anything longer posts a clean summary and rides the full detail
+			// as attached CSV + HTML reports (no partial-list preview).
 			body, omitted := formatPromoMessage(position, "", asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
-			msg.Content = "📋 **Weekly promotion sweep**\n" + body
 			if omitted > 0 {
-				msg.Files = []*discordgo.File{promoReportFile(position, "", asOf, scan)}
+				body = formatPromoSummary(position, "", asOf, scan.Candidates, scan.SkippedCount, scan.ViiActive)
+				msg.Files = []*discordgo.File{
+					promoCSVFile(position, "", asOf, scan),
+					promoReportFile(position, "", asOf, scan),
+				}
 			}
+			msg.Content = "📋 **Weekly promotion sweep**\n" + body
 		}
 		if _, err := s.ChannelMessageSendComplex(cfg.ChannelID, msg); err != nil {
 			return fmt.Errorf("send sweep message for %s: %w", position, err)

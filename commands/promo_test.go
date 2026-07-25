@@ -292,18 +292,25 @@ func TestRunPromoLongListAttachesReport(t *testing.T) {
 	if len(content) >= 2000 {
 		t.Errorf("message length %d exceeds Discord limit", len(content))
 	}
-	if !strings.Contains(content, "full list in the attached report") {
-		t.Errorf("overflow notice missing: %q", content)
+	if !strings.Contains(content, "Full list in the attached CSV and HTML report") {
+		t.Errorf("summary pointer missing: %q", content)
 	}
-	body, name := lastAttachment(t, f)
-	if !strings.HasSuffix(name, ".html") {
-		t.Errorf("attachment = %q, want .html", name)
+	// The clean summary must NOT dump a partial candidate list.
+	if strings.Contains(content, "Member.000") {
+		t.Errorf("summary should not inline any candidates: %q", content)
 	}
+	csvBody, htmlBody := lastAttachments(t, f)
 	for i := 0; i < 60; i++ {
 		who := fmt.Sprintf("Member.%03d", i)
-		if !strings.Contains(body, who) {
-			t.Fatalf("candidate %s missing from attached report", who)
+		if !strings.Contains(htmlBody, who) {
+			t.Fatalf("candidate %s missing from HTML report", who)
 		}
+		if !strings.Contains(csvBody, who) {
+			t.Fatalf("candidate %s missing from CSV report", who)
+		}
+	}
+	if !strings.Contains(csvBody, "username,current_rank,next_rank") {
+		t.Errorf("CSV header missing: %q", csvBody[:min(120, len(csvBody))])
 	}
 }
 
@@ -935,22 +942,26 @@ func TestRunPromoForceFileOutput(t *testing.T) {
 	f := &fakeResponder{}
 	runPromo(f, i, afsmRefDate)
 
-	body, name := lastAttachment(t, f)
-	if !strings.HasSuffix(name, ".html") {
-		t.Errorf("file name = %q, want .html", name)
+	csvBody, htmlBody := lastAttachments(t, f)
+	if !strings.Contains(htmlBody, "<table>") || !strings.Contains(htmlBody, "eligibility") {
+		t.Errorf("HTML report structure missing: %q", htmlBody)
 	}
-	if !strings.Contains(body, "<table>") || !strings.Contains(body, "eligibility") {
-		t.Errorf("report structure missing: %q", body)
+	if !strings.Contains(htmlBody, "Ready.R") || !strings.Contains(htmlBody, "Vet.V") {
+		t.Errorf("HTML report missing candidates: %q", htmlBody)
 	}
-	if !strings.Contains(body, "Ready.R") || !strings.Contains(body, "Vet.V") {
-		t.Errorf("report missing candidates: %q", body)
+	if !strings.Contains(htmlBody, "§VII") {
+		t.Errorf("HTML report missing §VII path data: %q", htmlBody)
 	}
-	if !strings.Contains(body, "§VII") {
-		t.Errorf("report missing §VII path data: %q", body)
+	if !strings.Contains(csvBody, "Ready.R") || !strings.Contains(csvBody, "Vet.V") {
+		t.Errorf("CSV report missing candidates: %q", csvBody)
 	}
-	// A short list forced to file still renders inline too.
-	if strings.Contains(lastEditContent(f.Calls()), "attached report") {
-		t.Errorf("forced file should not claim overflow: %q", lastEditContent(f.Calls()))
+	// A short list forced to file shows the clean summary, not an inline list.
+	content := lastEditContent(f.Calls())
+	if !strings.Contains(content, "Full list in the attached CSV and HTML report") {
+		t.Errorf("forced file should show the summary pointer: %q", content)
+	}
+	if strings.Contains(content, "Ready.R") {
+		t.Errorf("forced file summary should not inline candidates: %q", content)
 	}
 }
 
@@ -975,8 +986,9 @@ func TestPromoReportEscapesMilpacData(t *testing.T) {
 	}
 }
 
-// lastAttachment returns the body and name of the file on the last Edit call.
-func lastAttachment(t *testing.T, f *fakeResponder) (string, string) {
+// lastAttachments returns the CSV and HTML report bodies from the last Edit
+// call — /promo attaches both when a list ships as files.
+func lastAttachments(t *testing.T, f *fakeResponder) (csvBody, htmlBody string) {
 	t.Helper()
 	var edit *discordgo.WebhookEdit
 	for _, call := range f.Calls() {
@@ -984,12 +996,25 @@ func lastAttachment(t *testing.T, f *fakeResponder) (string, string) {
 			edit = call.Edit
 		}
 	}
-	if edit == nil || len(edit.Files) != 1 {
-		t.Fatalf("expected one attached file, calls: %+v", f.Calls())
+	if edit == nil || len(edit.Files) != 2 {
+		t.Fatalf("expected CSV + HTML attachments, calls: %+v", f.Calls())
 	}
-	var sb strings.Builder
-	if _, err := io.Copy(&sb, edit.Files[0].Reader); err != nil {
-		t.Fatalf("read attachment: %v", err)
+	for _, fl := range edit.Files {
+		var sb strings.Builder
+		if _, err := io.Copy(&sb, fl.Reader); err != nil {
+			t.Fatalf("read attachment %s: %v", fl.Name, err)
+		}
+		switch {
+		case strings.HasSuffix(fl.Name, ".csv"):
+			csvBody = sb.String()
+		case strings.HasSuffix(fl.Name, ".html"):
+			htmlBody = sb.String()
+		default:
+			t.Fatalf("unexpected attachment %q", fl.Name)
+		}
 	}
-	return sb.String(), edit.Files[0].Name
+	if csvBody == "" || htmlBody == "" {
+		t.Fatalf("missing csv or html attachment; files: %+v", edit.Files)
+	}
+	return csvBody, htmlBody
 }

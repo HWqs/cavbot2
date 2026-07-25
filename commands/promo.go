@@ -10,6 +10,7 @@ package commands
 
 import (
 	"context"
+	"encoding/csv"
 	"fmt"
 	"html"
 	"sort"
@@ -299,16 +300,25 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 	}
 
 	message, omitted := formatPromoMessage(scope, promoType, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
+	attach := forceFile || omitted > 0
 	edit := &discordgo.WebhookEdit{Content: &message}
-	if forceFile || omitted > 0 {
-		edit.Files = []*discordgo.File{promoReportFile(scope, promoType, asOf, res)}
+	if attach {
+		// When the full list ships as files, replace the inline message with a
+		// clean summary (no partial-list "preview") and attach both a CSV (for
+		// spreadsheets) and an HTML report (for reading with clickable links).
+		summary := formatPromoSummary(scope, promoType, asOf, res.Candidates, res.SkippedCount, res.ViiActive)
+		edit.Content = &summary
+		edit.Files = []*discordgo.File{
+			promoCSVFile(scope, promoType, asOf, res),
+			promoReportFile(scope, promoType, asOf, res),
+		}
 	}
 	if err := r.InteractionResponseEdit(i.Interaction, edit); err != nil {
 		captureDeferredEditFailure(i, "Promo", err)
 		return
 	}
 	utils.Info("✨ Done!", "command", "Promo", "position", logScope,
-		"eligible", len(res.Candidates), "omitted_from_message", omitted, "attached_file", forceFile || omitted > 0)
+		"eligible", len(res.Candidates), "omitted_from_message", omitted, "attached_file", attach)
 }
 
 // filterPromoCandidates keeps only candidates eligible via the given
@@ -419,17 +429,7 @@ func evaluatePromoMember(
 // always renders: eligibility is parsed from user-entered milpac data, so
 // formatting drift can silently skew results (same rationale as /afsm).
 func formatPromoMessage(scope, promoType string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) (string, int) {
-	var footer strings.Builder
-	if !viiActive {
-		footer.WriteString("\nℹ️ Veteran Rank Retention (§VII) check unavailable this run (rank data fetch failed) — standard ladder only.")
-	}
-	if skippedCount > 0 {
-		noun := "members"
-		if skippedCount == 1 {
-			noun = "member"
-		}
-		footer.WriteString(fmt.Sprintf("\n⚠️ %d %s skipped due to errors (reported)", skippedCount, noun))
-	}
+	footer := promoFooter(skippedCount, viiActive)
 
 	var b strings.Builder
 	b.WriteString(promoDisclaimer)
@@ -437,7 +437,7 @@ func formatPromoMessage(scope, promoType string, asOf time.Time, candidates []pr
 
 	if len(candidates) == 0 {
 		b.WriteString(fmt.Sprintf("No %s members eligible for %s as of %s", scopeDisplay(scope), promoPhrase(promoType), promoDate(asOf)))
-		b.WriteString(footer.String())
+		b.WriteString(footer)
 		return strings.TrimRight(b.String(), "\n"), 0
 	}
 
@@ -446,7 +446,7 @@ func formatPromoMessage(scope, promoType string, asOf time.Time, candidates []pr
 	// Reserve room for the footer and a worst-case overflow notice so the
 	// message cannot be pushed over the limit by what gets appended after
 	// the loop.
-	budget := promoMessageLimit - footer.Len() - promoOverflowReserve
+	budget := promoMessageLimit - len(footer) - promoOverflowReserve
 	listed := 0
 	for _, c := range candidates {
 		line := formatPromoLine(c)
@@ -460,8 +460,43 @@ func formatPromoMessage(scope, promoType string, asOf time.Time, candidates []pr
 	if omitted > 0 {
 		b.WriteString(fmt.Sprintf("…and %d more — full list in the attached report.", omitted))
 	}
-	b.WriteString(footer.String())
+	b.WriteString(footer)
 	return strings.TrimRight(b.String(), "\n"), omitted
+}
+
+// formatPromoSummary is the message shown when the full list goes out as file
+// attachments instead: disclaimer, a one-line count, and a pointer to the
+// attached reports — no inline candidate lines, so the message stays clean
+// rather than dumping a partial "preview" alongside the files.
+func formatPromoSummary(scope, promoType string, asOf time.Time, candidates []promoCandidate, skippedCount int, viiActive bool) string {
+	var b strings.Builder
+	b.WriteString(promoDisclaimer)
+	b.WriteString("\n\n")
+	if len(candidates) == 0 {
+		b.WriteString(fmt.Sprintf("No %s members eligible for %s as of %s", scopeDisplay(scope), promoPhrase(promoType), promoDate(asOf)))
+	} else {
+		fmt.Fprintf(&b, "**%s members eligible for %s as of %s: %d found.**\nFull list in the attached CSV and HTML report.",
+			upperFirst(scopeDisplay(scope)), promoPhrase(promoType), promoDate(asOf), len(candidates))
+	}
+	b.WriteString(promoFooter(skippedCount, viiActive))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// promoFooter renders the shared trailing notices (§VII degradation, skipped
+// members) appended to both the inline-list and summary messages.
+func promoFooter(skippedCount int, viiActive bool) string {
+	var footer strings.Builder
+	if !viiActive {
+		footer.WriteString("\nℹ️ Veteran Rank Retention (§VII) check unavailable this run (rank data fetch failed) — standard ladder only.")
+	}
+	if skippedCount > 0 {
+		noun := "members"
+		if skippedCount == 1 {
+			noun = "member"
+		}
+		footer.WriteString(fmt.Sprintf("\n⚠️ %d %s skipped due to errors (reported)", skippedCount, noun))
+	}
+	return footer.String()
 }
 
 // formatPromoLine renders one candidate. Standard candidates show the ladder
@@ -892,13 +927,62 @@ tr:nth-child(even) td{background:#fafafa}
 	fmt.Fprintf(&b, "<p class=\"note\">%s</p>\n", html.EscapeString(promoDisclaimer))
 	b.WriteString("</body></html>\n")
 
+	return &discordgo.File{
+		Name:        fmt.Sprintf("promo_report_%s_%s.html", promoFileScope(scope, promoType), asOf.Format("2006-01-02")),
+		ContentType: "text/html",
+		Reader:      strings.NewReader(b.String()),
+	}
+}
+
+// promoFileScope makes a scope+type label safe for a filename.
+func promoFileScope(scope, promoType string) string {
 	fileScope := strings.ReplaceAll(scope, "/", "-")
 	if promoType != "" {
 		fileScope += "_" + promoType
 	}
+	return fileScope
+}
+
+// promoCSVFile is the machine-readable companion to the HTML report, for
+// pivoting in a spreadsheet. Same rows as the HTML table; encoding/csv handles
+// escaping, and the strings.Builder target means no I/O error path in practice.
+func promoCSVFile(scope, promoType string, asOf time.Time, scan promoScan) *discordgo.File {
+	var sb strings.Builder
+	w := csv.NewWriter(&sb)
+	_ = w.Write([]string{
+		"username", "current_rank", "next_rank", "path", "type",
+		"tig_days", "tis_days", "pending_courses", "vii_held", "lateral_target", "milpac_url",
+	})
+	for _, c := range scan.Candidates {
+		var paths []string
+		if c.Verdict.Eligible {
+			paths = append(paths, "standard")
+		}
+		viiHeld := ""
+		if c.ViaVII {
+			paths = append(paths, "vii")
+			viiHeld = c.Vii.Target.Short
+			if c.Vii.TargetHeldDate != "" {
+				viiHeld += " (held " + c.Vii.TargetHeldDate
+				if c.Vii.TargetHeldRole != "" {
+					viiHeld += " as " + c.Vii.TargetHeldRole
+				}
+				viiHeld += ")"
+			}
+		}
+		if c.LateralTarget != "" {
+			paths = append(paths, "lateral")
+		}
+		_ = w.Write([]string{
+			c.Username, c.RankShort, c.Verdict.NextRank, strings.Join(paths, "+"), c.Verdict.Type,
+			fmt.Sprintf("%d", c.Verdict.TigDays), fmt.Sprintf("%d", c.Verdict.TisDays),
+			strings.Join(c.Verdict.PendingDisplayCourses, ";"), viiHeld, c.LateralTarget, c.MilpacURL,
+		})
+	}
+	w.Flush()
 	return &discordgo.File{
-		Name:        fmt.Sprintf("promo_report_%s_%s.html", fileScope, asOf.Format("2006-01-02")),
-		ContentType: "text/html",
-		Reader:      strings.NewReader(b.String()),
+		Name:        fmt.Sprintf("promo_report_%s_%s.csv", promoFileScope(scope, promoType), asOf.Format("2006-01-02")),
+		ContentType: "text/csv",
+		Reader:      strings.NewReader(sb.String()),
 	}
 }
