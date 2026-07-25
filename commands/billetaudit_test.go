@@ -195,6 +195,10 @@ func TestAuditMosVsBillet(t *testing.T) {
 }
 
 func billetAuditInteraction(position, user string) *discordgo.InteractionCreate {
+	return billetAuditInteractionMode(position, user, "")
+}
+
+func billetAuditInteractionMode(position, user, audit string) *discordgo.InteractionCreate {
 	var opts []*discordgo.ApplicationCommandInteractionDataOption
 	if position != "" {
 		opts = append(opts, &discordgo.ApplicationCommandInteractionDataOption{
@@ -206,11 +210,53 @@ func billetAuditInteraction(position, user string) *discordgo.InteractionCreate 
 			Name: "user", Type: discordgo.ApplicationCommandOptionString, Value: user,
 		})
 	}
+	if audit != "" {
+		opts = append(opts, &discordgo.ApplicationCommandInteractionDataOption{
+			Name: "audit", Type: discordgo.ApplicationCommandOptionString, Value: audit,
+		})
+	}
 	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
 		Type:   discordgo.InteractionApplicationCommand,
 		Data:   discordgo.ApplicationCommandInteractionData{Name: "billetaudit", Options: opts},
 		Member: &discordgo.Member{User: &discordgo.User{ID: "42", Username: "tester"}},
 	}}
+}
+
+// filterBilletReportsByMode keeps only the selected category; "all" is a no-op.
+func TestFilterBilletReportsByMode(t *testing.T) {
+	reports := []billetAuditReport{{
+		Username: "Multi.M",
+		Findings: []billetFinding{
+			{Category: billetCatAmbiguousTransfer, Note: "a"},
+			{Category: billetCatMosMismatch, Note: "b"},
+			{Category: billetCatMissingRecord, Note: "c"},
+		},
+	}, {
+		Username: "OnlyMos.O",
+		Findings: []billetFinding{{Category: billetCatMosMismatch, Note: "d"}},
+	}}
+
+	all := filterBilletReportsByMode(reports, billetAuditAll)
+	if len(all) != 2 {
+		t.Errorf("all mode should keep every report, got %d", len(all))
+	}
+
+	mos := filterBilletReportsByMode(reports, billetAuditMos)
+	if len(mos) != 2 {
+		t.Fatalf("mos mode should keep both members (both have a mos finding), got %d", len(mos))
+	}
+	for _, rep := range mos {
+		for _, f := range rep.Findings {
+			if f.Category != billetCatMosMismatch {
+				t.Errorf("mos mode leaked a %s finding", f.Category)
+			}
+		}
+	}
+
+	renames := filterBilletReportsByMode(reports, billetAuditRenames)
+	if len(renames) != 1 || renames[0].Username != "Multi.M" || len(renames[0].Findings) != 1 {
+		t.Errorf("renames mode should keep only Multi.M's missing-record finding, got %+v", renames)
+	}
 }
 
 func TestRunBilletAuditScope(t *testing.T) {

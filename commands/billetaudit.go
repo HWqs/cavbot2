@@ -39,6 +39,24 @@ const (
 	billetCatMosMismatch       = "mos/billet mismatch"
 )
 
+// Audit modes select which groups of checks run. Default is all.
+const (
+	billetAuditAll        = "all"
+	billetAuditMos        = "mos"
+	billetAuditUnrelieved = "unrelieved"
+	billetAuditRenames    = "renames"
+)
+
+// billetAuditModeCategories maps an audit mode to the finding categories it
+// includes. "unrelieved" covers the record-stream hygiene checks; "renames"
+// covers the current-billet-vs-records check (which catches a billet that was
+// renamed under a trooper as well as a genuinely missing record).
+var billetAuditModeCategories = map[string]map[string]bool{
+	billetAuditMos:        {billetCatMosMismatch: true},
+	billetAuditUnrelieved: {billetCatAmbiguousTransfer: true, billetCatOrphanRelief: true},
+	billetAuditRenames:    {billetCatMissingRecord: true},
+}
+
 // billetFinding is one flagged ambiguity in a member's record stream.
 type billetFinding struct {
 	Date     string // record date, or "" for roster-vs-records findings
@@ -73,6 +91,18 @@ func BilletAudit() Command {
 					Description: "Audit one trooper by forum username",
 					Required:    false,
 				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "audit",
+					Description: "Which checks to run (default all)",
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "all", Value: billetAuditAll},
+						{Name: "mos (MOS vs billet)", Value: billetAuditMos},
+						{Name: "unrelieved (missing reliefs / stacked billets)", Value: billetAuditUnrelieved},
+						{Name: "renames (current billet not in records)", Value: billetAuditRenames},
+					},
+				},
 			},
 		},
 		Handler: handleBilletAudit,
@@ -87,13 +117,15 @@ func runBilletAudit(r utils.InteractionResponder, i *discordgo.InteractionCreate
 	username, discordID := interactionUsernameAndID(i)
 	utils.Info("🚀 Starting Billet Audit", "command", "BilletAudit", "username", username, "discord_id", discordID)
 
-	position, user := "", ""
+	position, user, auditMode := "", "", billetAuditAll
 	for _, opt := range i.ApplicationCommandData().Options {
 		switch opt.Name {
 		case "position":
 			position = opt.StringValue()
 		case "user":
 			user = opt.StringValue()
+		case "audit":
+			auditMode = opt.StringValue()
 		}
 	}
 	if position != "" && user != "" {
@@ -106,6 +138,9 @@ func runBilletAudit(r utils.InteractionResponder, i *discordgo.InteractionCreate
 	scope := scopeDisplay(position)
 	if user != "" {
 		scope = user
+	}
+	if auditMode != billetAuditAll {
+		scope += " (" + auditMode + ")"
 	}
 
 	err := r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -208,6 +243,7 @@ func runBilletAudit(r utils.InteractionResponder, i *discordgo.InteractionCreate
 		})
 	}
 
+	reports = filterBilletReportsByMode(reports, auditMode)
 	rows := flattenBilletReports(reports)
 	content := formatBilletAuditSummary(scope, rows, len(reports), memberCount, skipped)
 	edit := &discordgo.WebhookEdit{Content: &content}
@@ -229,6 +265,29 @@ func runBilletAudit(r utils.InteractionResponder, i *discordgo.InteractionCreate
 // billetRow is one flattened finding, the unit of the CSV/HTML export.
 type billetRow struct {
 	Username, RankShort, MilpacURL, Category, Date, Note string
+}
+
+// filterBilletReportsByMode keeps only the findings whose category the audit
+// mode includes, dropping members left with none. "all" is a no-op.
+func filterBilletReportsByMode(reports []billetAuditReport, mode string) []billetAuditReport {
+	allowed, scoped := billetAuditModeCategories[mode]
+	if !scoped {
+		return reports // "all" (or an unknown mode) keeps everything
+	}
+	filtered := make([]billetAuditReport, 0, len(reports))
+	for _, rep := range reports {
+		kept := rep.Findings[:0:0]
+		for _, f := range rep.Findings {
+			if allowed[f.Category] {
+				kept = append(kept, f)
+			}
+		}
+		if len(kept) > 0 {
+			rep.Findings = kept
+			filtered = append(filtered, rep)
+		}
+	}
+	return filtered
 }
 
 func flattenBilletReports(reports []billetAuditReport) []billetRow {
@@ -527,6 +586,7 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 	// primary (staff members routinely move up from a line billet, so a
 	// last-primary comparison flags almost everyone).
 	assignedRoles := map[string]bool{}
+	lastAssigned := "" // most recent assigned role, for the rename hint
 	var findings []billetFinding
 
 	for _, r := range recs {
@@ -536,6 +596,7 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 		switch {
 		case role != "" && viiBilletType(role) != "":
 			assignedRoles[strings.ToLower(role)] = true
+			lastAssigned = role
 			// A primary move or any line assignment re-baselines: prior
 			// bare-staff ambiguity is resolved.
 			if isPrimaryMove || viiBilletType(role) == "line" {
@@ -566,6 +627,7 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 			// against post-return records only.
 			clearPending()
 			assignedRoles = map[string]bool{}
+			lastAssigned = ""
 		}
 		// A Reserves transfer is deliberately a no-op here: it does NOT drop
 		// billets (departmental service continues, which the §VII retirement
@@ -580,8 +642,16 @@ func auditBilletRecords(profile *utils.ProfileResponse) []billetFinding {
 	// "Trooper" vs a recorded "Combat Medic" is never a finding.
 	cur := normalizeRole(profile.Primary.PositionTitle)
 	if cur != "" && detectBillet(cur) != "" && !assignedRoles[strings.ToLower(cur)] {
-		findings = append(findings, billetFinding{Category: billetCatMissingRecord, Note: fmt.Sprintf(
-			"current billet %q has no matching assignment record — records incomplete?", cur)})
+		note := fmt.Sprintf("current billet %q has no matching assignment record", cur)
+		if lastAssigned != "" {
+			// A last-recorded assignment that was never superseded suggests the
+			// billet was renamed under the trooper (e.g. IMO Assistant →
+			// Regimental Technical Aide) rather than a truly missing record.
+			note += fmt.Sprintf(" — last recorded was %q; possible billet rename, or a missing record. Verify.", lastAssigned)
+		} else {
+			note += " — records incomplete?"
+		}
+		findings = append(findings, billetFinding{Category: billetCatMissingRecord, Note: note})
 	}
 
 	// MOS vs primary billet: the MOS should match the branch/department the
