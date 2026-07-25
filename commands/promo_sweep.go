@@ -176,64 +176,19 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 // Manual trigger
 // ---------------------------------------------------------------------------
 
-// promoSweepTriggerRole is the Discord role (by name) allowed to fire the
-// manual sweep. Name-based rather than ID-based so the same build works on
-// the test guild and production, which have different role IDs.
-//
-// DEPLOYMENT NOTE — server-side gating required: this in-code check is a
-// backstop, not the primary control. The bot's other restricted commands
-// (e.g. /awol) carry NO in-code authorization; their gating lives entirely
-// in Discord's server-side integration permissions (Server Settings →
-// Integrations → CavBot2 → per-command role/channel rules), configured by
-// server admins. /promo_sweep_now must be restricted the same way at rollout
-// — wherever /awol's restriction is configured, mirror it there for this
-// command. The code gate below then covers misconfiguration (it fails
-// closed), but should never be the only layer.
-//
-// TODO(S1 follow-up): confirm with S1 whether "S1 - Department" is the right
-// role and whether it should be env-configurable before production rollout.
-const promoSweepTriggerRole = "S1 - Department"
-
-// roleLister is the narrow Discord surface the role gate needs;
-// *discordgo.Session satisfies it (same seam style as GuildManager).
-type roleLister interface {
-	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
-}
-
-// memberHasRoleByName reports whether the interaction member holds the named
-// guild role. Fails closed: a role-list fetch error or a missing role denies.
-func memberHasRoleByName(rl roleLister, i *discordgo.InteractionCreate, roleName string) (bool, error) {
-	if i.Member == nil || i.GuildID == "" {
-		return false, nil // DM context: no roles, no access
-	}
-	roles, err := rl.GuildRoles(i.GuildID)
-	if err != nil {
-		return false, err
-	}
-	roleID := ""
-	for _, role := range roles {
-		if role.Name == roleName {
-			roleID = role.ID
-			break
-		}
-	}
-	if roleID == "" {
-		return false, nil
-	}
-	for _, held := range i.Member.Roles {
-		if held == roleID {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 // PromoSweepNow registers /promo_sweep_now: fires the sweep immediately with
 // the current config. Exists so the sweep can be smoke-tested on the test
 // guild without waiting for Monday; also useful when S1 wants an off-cycle
 // report. Response is ephemeral (management action, warden convention).
-// Gated to the S1 department role — an off-cycle post lands in S1's channel,
-// so only S1 gets the trigger.
+//
+// ACCESS CONTROL — configure Discord-side at rollout. This command posts
+// unprompted into S1's channel, so it is not for general use, but it carries
+// no in-code authorization: like the bot's other restricted commands
+// (/warden, /apps_beta_deploy, /awol), access is governed entirely by
+// Discord's server-side integration permissions (Server Settings →
+// Integrations → CavBot2 → per-command role and channel rules). Restrict it
+// there, wherever the equivalent restriction for /awol is configured, as
+// part of deploying this feature.
 func PromoSweepNow() Command {
 	return Command{
 		Definition: &discordgo.ApplicationCommand{
@@ -245,29 +200,17 @@ func PromoSweepNow() Command {
 }
 
 func handlePromoSweepNow(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	runPromoSweepNow(utils.NewSessionResponder(s), s, s, i, time.Now().UTC())
+	runPromoSweepNow(utils.NewSessionResponder(s), s, i, time.Now().UTC())
 }
 
 // runPromoSweepNow is the testable core; sender is the channel-send surface
-// and rl the role-list surface (the live session for both in production).
-func runPromoSweepNow(r utils.InteractionResponder, sender promoSweepSession, rl roleLister, i *discordgo.InteractionCreate, nowUTC time.Time) {
+// (the live session in production, a fake in tests).
+func runPromoSweepNow(r utils.InteractionResponder, sender promoSweepSession, i *discordgo.InteractionCreate, nowUTC time.Time) {
 	username, discordID := interactionUsernameAndID(i)
 	utils.Info("🚀 Starting Promo Sweep (manual)", "command", "PromoSweepNow", "username", username, "discord_id", discordID)
 
-	allowed, err := memberHasRoleByName(rl, i, promoSweepTriggerRole)
-	if err != nil {
-		utils.CaptureError("❌ Role check failed", err, "command", "PromoSweepNow")
-		utils.HandleError(r, i, "❌ Could not verify your roles — try again in a moment.")
-		return
-	}
-	if !allowed {
-		utils.Info("🚫 Promo sweep trigger denied", "username", username, "discord_id", discordID, "required_role", promoSweepTriggerRole)
-		utils.HandleError(r, i, fmt.Sprintf("🚫 This command requires the %q role.", promoSweepTriggerRole))
-		return
-	}
-
 	cfg := promoSweepConfigFromEnv()
-	err = r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	err := r.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content: fmt.Sprintf("Running promotion sweep for %s → <#%s>...", strings.Join(cfg.Positions, ", "), cfg.ChannelID),

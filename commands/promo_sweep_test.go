@@ -20,21 +20,6 @@ var errBoom = errors.New("boom")
 
 func ioCopy(dst io.Writer, src io.Reader) (int64, error) { return io.Copy(dst, src) }
 
-// fakeRoleLister serves a fixed guild role list; optional error.
-type fakeRoleLister struct {
-	roles []*discordgo.Role
-	err   error
-}
-
-func (f *fakeRoleLister) GuildRoles(_ string, _ ...discordgo.RequestOption) ([]*discordgo.Role, error) {
-	return f.roles, f.err
-}
-
-var s1RoleLister = &fakeRoleLister{roles: []*discordgo.Role{
-	{ID: "r-recruit", Name: "Recruit"},
-	{ID: "r-s1", Name: "S1 - Department"},
-}}
-
 // fakeChannelSender records ChannelMessageSend calls; optional error queue.
 type fakeChannelSender struct {
 	mu       sync.Mutex
@@ -215,8 +200,8 @@ func TestRunPromoSweepNowCommand(t *testing.T) {
 
 	f := &fakeResponder{}
 	sender := &fakeChannelSender{}
-	i := sweepNowInteraction("r-s1")
-	runPromoSweepNow(f, sender, s1RoleLister, i, afsmRefDate)
+	i := sweepNowInteraction()
+	runPromoSweepNow(f, sender, i, afsmRefDate)
 
 	if len(sender.channels) != 1 || sender.channels[0] != "chan-test" {
 		t.Errorf("sweep posted to %v, want [chan-test]", sender.channels)
@@ -236,44 +221,13 @@ func TestRunPromoSweepNowCommand(t *testing.T) {
 	}
 }
 
-func sweepNowInteraction(roleIDs ...string) *discordgo.InteractionCreate {
+func sweepNowInteraction() *discordgo.InteractionCreate {
 	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
 		Type:    discordgo.InteractionApplicationCommand,
 		GuildID: "guild-1",
 		Data:    discordgo.ApplicationCommandInteractionData{Name: "promo_sweep_now"},
-		Member:  &discordgo.Member{User: &discordgo.User{ID: "42", Username: "tester"}, Roles: roleIDs},
+		Member:  &discordgo.Member{User: &discordgo.User{ID: "42", Username: "tester"}},
 	}}
-}
-
-func TestRunPromoSweepNowDeniedWithoutRole(t *testing.T) {
-	f := &fakeResponder{}
-	sender := &fakeChannelSender{}
-	runPromoSweepNow(f, sender, s1RoleLister, sweepNowInteraction("r-recruit"), afsmRefDate)
-
-	if len(sender.bodies) != 0 {
-		t.Errorf("sweep ran despite missing role: %+v", sender.bodies)
-	}
-	found := false
-	for _, call := range f.Calls() {
-		if call.Method == "Respond" && call.Response != nil && call.Response.Data != nil &&
-			strings.Contains(call.Response.Data.Content, `requires the "S1 - Department" role`) {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected role-denied message, calls: %+v", f.Calls())
-	}
-}
-
-func TestRunPromoSweepNowRoleCheckFailsClosed(t *testing.T) {
-	f := &fakeResponder{}
-	sender := &fakeChannelSender{}
-	broken := &fakeRoleLister{err: errBoom}
-	runPromoSweepNow(f, sender, broken, sweepNowInteraction("r-s1"), afsmRefDate)
-
-	if len(sender.bodies) != 0 {
-		t.Errorf("sweep ran despite role-check failure: %+v", sender.bodies)
-	}
 }
 
 func TestCollectPromoCandidatesActiveDutyScope(t *testing.T) {
