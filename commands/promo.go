@@ -275,9 +275,9 @@ func runPromo(r utils.InteractionResponder, i *discordgo.InteractionCreate, now 
 
 	var res promoScan
 	if rank != "" {
-		res, err = collectPromoCandidatesByRank(ctx, rank, asOf)
+		res, err = collectPromoCandidatesByRank(ctx, rank, asOf, promoType)
 	} else {
-		res, err = collectPromoCandidates(ctx, position, asOf)
+		res, err = collectPromoCandidates(ctx, position, asOf, promoType)
 	}
 	if err != nil {
 		utils.CaptureError("❌ Roster fetch failed", err)
@@ -551,7 +551,7 @@ func resolvePositionRoster(ctx context.Context, position string) (*utils.LiteRos
 	return utils.GetRosterByFuzzyPositionSearch(ctx, position)
 }
 
-func collectPromoCandidates(ctx context.Context, position string, asOf time.Time) (promoScan, error) {
+func collectPromoCandidates(ctx context.Context, position string, asOf time.Time, promoType string) (promoScan, error) {
 	roster, err := resolvePositionRoster(ctx, position)
 	if err != nil {
 		return promoScan{}, err
@@ -566,13 +566,13 @@ func collectPromoCandidates(ctx context.Context, position string, asOf time.Time
 	for _, member := range roster.LiteProfiles {
 		members = append(members, member)
 	}
-	return evaluatePromoRoster(ctx, members, position, asOf), nil
+	return evaluatePromoRoster(ctx, members, position, asOf, promoType), nil
 }
 
 // collectPromoCandidatesByRank runs the eligibility pass for every Active
 // Duty trooper currently holding rankShort (case-insensitive milpac short
 // form, e.g. "PFC").
-func collectPromoCandidatesByRank(ctx context.Context, rankShort string, asOf time.Time) (promoScan, error) {
+func collectPromoCandidatesByRank(ctx context.Context, rankShort string, asOf time.Time, promoType string) (promoScan, error) {
 	roster, err := utils.GetLiteRoster(ctx, "ROSTER_TYPE_COMBAT")
 	if err != nil {
 		return promoScan{}, err
@@ -589,13 +589,13 @@ func collectPromoCandidatesByRank(ctx context.Context, rankShort string, asOf ti
 	if len(members) == 0 {
 		return promoScan{EmptyRoster: true}, nil
 	}
-	return evaluatePromoRoster(ctx, members, "rank:"+rankShort, asOf), nil
+	return evaluatePromoRoster(ctx, members, "rank:"+rankShort, asOf, promoType), nil
 }
 
 // evaluatePromoRoster is the scope-independent tail of an eligibility pass:
 // rank-model fetch (degradable), concurrent per-member evaluation, and the
 // seniority sort. scopeLabel is for error reporting only.
-func evaluatePromoRoster(ctx context.Context, members []utils.LiteProfileResponse, scopeLabel string, asOf time.Time) promoScan {
+func evaluatePromoRoster(ctx context.Context, members []utils.LiteProfileResponse, scopeLabel string, asOf time.Time, promoType string) promoScan {
 	// Rank model for the §VII path, fetched once per pass (after the callers'
 	// empty-roster early returns, so an empty scope costs no extra call). A
 	// failure degrades to standard-ladder-only rather than failing the pass.
@@ -605,6 +605,19 @@ func evaluatePromoRoster(ctx context.Context, members []utils.LiteProfileRespons
 	} else {
 		rankModel = buildRankModel(ranksResp)
 	}
+
+	// Drop the members the lite roster already rules out, so the fan-out only
+	// spends milpac fetches on records that could change the answer.
+	fetchable := make([]utils.LiteProfileResponse, 0, len(members))
+	for _, member := range members {
+		if promoNeedsProfile(member, asOf, rankModel, promoType) {
+			fetchable = append(fetchable, member)
+		}
+	}
+	utils.Info("🔎 Pre-filtered roster on lite data",
+		"scope", scopeLabel, "type", promoType, "roster", len(members),
+		"fetching", len(fetchable), "ruled_out", len(members)-len(fetchable))
+	members = fetchable
 
 	results := make([]*promoCandidate, len(members))
 	errs := make([]error, len(members))

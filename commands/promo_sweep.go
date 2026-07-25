@@ -146,7 +146,7 @@ func runPromoSweep(s promoSweepSession, cfg promoSweepConfig, asOf time.Time) er
 	defer cancel()
 
 	for _, position := range cfg.Positions {
-		scan, err := collectPromoCandidates(ctx, position, asOf)
+		scan, err := collectPromoCandidates(ctx, position, asOf, "")
 		if err != nil {
 			utils.CaptureError("Promotion sweep position pass failed", err, "position", position)
 			continue
