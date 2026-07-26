@@ -7,3 +7,4 @@ docs/superpowers/
 
 # build artifact from `go build -o cavbot2`
 /cavbot2
+/cavbot2.exe
